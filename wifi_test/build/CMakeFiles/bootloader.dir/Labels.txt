@@ -1,0 +1,13 @@
+# Target labels
+ bootloader
+# Source files and their labels
+/home/kevin/esp/wifi_test/build/CMakeFiles/bootloader
+/home/kevin/esp/wifi_test/build/CMakeFiles/bootloader.rule
+/home/kevin/esp/wifi_test/build/CMakeFiles/bootloader-complete.rule
+/home/kevin/esp/wifi_test/build/bootloader-prefix/src/bootloader-stamp/bootloader-build.rule
+/home/kevin/esp/wifi_test/build/bootloader-prefix/src/bootloader-stamp/bootloader-configure.rule
+/home/kevin/esp/wifi_test/build/bootloader-prefix/src/bootloader-stamp/bootloader-download.rule
+/home/kevin/esp/wifi_test/build/bootloader-prefix/src/bootloader-stamp/bootloader-install.rule
+/home/kevin/esp/wifi_test/build/bootloader-prefix/src/bootloader-stamp/bootloader-mkdir.rule
+/home/kevin/esp/wifi_test/build/bootloader-prefix/src/bootloader-stamp/bootloader-patch.rule
+/home/kevin/esp/wifi_test/build/bootloader-prefix/src/bootloader-stamp/bootloader-update.rule

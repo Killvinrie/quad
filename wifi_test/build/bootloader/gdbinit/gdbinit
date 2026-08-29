@@ -1,0 +1,2 @@
+source /home/kevin/esp/wifi_test/build/bootloader/gdbinit/symbols
+source /home/kevin/esp/wifi_test/build/bootloader/gdbinit/connect

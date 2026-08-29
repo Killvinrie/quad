@@ -1,0 +1,8 @@
+Command: cmake -G Ninja -B /home/kevin/esp/wifi_test/main/build -DPYTHON_DEPS_CHECKED=1 -DPYTHON=/home/kevin/.espressif/tools/python/v6.1/venv/bin/python -DESP_PLATFORM=1 -DCCACHE_ENABLE=False /home/kevin/esp/wifi_test/main
+-- The C compiler identification is GNU 15.2.0
+-- The CXX compiler identification is GNU 15.2.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - failed
+-- Check for working C compiler: /usr/bin/cc
+-- Check for working C compiler: /usr/bin/cc - broken
+-- Configuring incomplete, errors occurred!

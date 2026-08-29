@@ -1,0 +1,19 @@
+Command: ninja all
+[1/9] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/hello_world_main.c.obj
+[2/9] Linking C static library esp-idf/main/libmain.a
+[3/9] Performing build step for 'bootloader'
+[1/1] cd /home/kevin/esp/hello_world/build/bootloader && /home/kevin/.espressif/tools/python/v6.1/venv/bin/python /home/kevin/.espressif/v6.1/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 bootloader 0x0 /home/kevin/esp/hello_world/build/bootloader/bootloader.bin
+Bootloader binary size 0x5280 bytes. 0x2d80 bytes (36%) free.
+[4/9] No install step for 'bootloader'
+[5/9] Completed 'bootloader'
+[6/9] Generating esp-idf/esp_system/ld/sections.ld
+Skipping linker script generation, section names unchanged
+[7/9] Linking CXX executable hello_world.elf
+[8/9] Generating binary image from built executable
+esptool v5.3.1
+Creating ESP32-S3 image...
+Merged 3 ELF sections.
+Successfully created ESP32-S3 image.
+Generated /home/kevin/esp/hello_world/build/hello_world.bin
+[9/9] cd /home/kevin/esp/hello_world/build && /home/kevin/.espressif/tools/python/v6.1/venv/bin/python /home/kevin/.espressif/v6.1/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 partition --type app /home/kevin/esp/hello_world/build/partition_table/partition-table.bin /home/kevin/esp/hello_world/build/hello_world.bin
+hello_world.bin binary size 0x24cd0 bytes. Smallest app partition is 0x100000 bytes. 0xdb330 bytes (86%) free.
