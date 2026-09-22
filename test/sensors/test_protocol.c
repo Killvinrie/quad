@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "display_link.h"
+#include "control_link.h"
 #include "gps_nmea.h"
 #include "bmp388_math.h"
 
@@ -101,9 +102,29 @@ static void test_bmp(void)
     assert(c.p[8] == -32768 / 281474976710656.0);
     assert(c.p[10] == -128 / 36893488147419103232.0);
 }
+static void test_control(void)
+{
+    ControlCommand in = {0}, out = {0};
+    uint8_t frame[CONTROL_FRAME_SIZE];
+    in.sequence = 7;
+    in.axis[0] = 1; in.axis[1] = 2048; in.axis[2] = 4095; in.axis[3] = 77;
+    in.buttons = 0x55aa; in.flags = 3; in.battery_mv = 3710;
+    control_encode(frame, &in);
+    assert(control_crc((const uint8_t *)"123456789", 9) == 0x29b1);
+    assert(control_decode(frame, &out));
+    assert(!memcmp(&in, &out, sizeof(in)));
+    ControlParser parser = {0};
+    uint8_t parsed[CONTROL_FRAME_SIZE];
+    for (unsigned i = 0; i < CONTROL_FRAME_SIZE; ++i)
+        assert(control_feed(&parser, frame[i], parsed) ==
+               (i == CONTROL_FRAME_SIZE - 1));
+    assert(control_decode(parsed, &out) && out.sequence == in.sequence);
+    frame[5] ^= 1;
+    assert(!control_decode(frame, &out));
+}
 int main(void)
 {
-    test_gps(); test_frames(); test_bmp();
-    puts("PASS: GPS validation, CRC/resynchronization, BMP388 compensation");
+    test_gps(); test_frames(); test_bmp(); test_control();
+    puts("PASS: GPS, display/control CRC, BMP388 compensation");
     return 0;
 }

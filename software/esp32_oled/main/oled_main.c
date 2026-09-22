@@ -7,11 +7,14 @@
 #include "driver/uart.h"
 #include "esp_log.h"
 #include "display_link.h"
+#include "control_link.h"
+#include "nrf24_esp32.h"
 
 static const char *TAG = "quad_oled";
 static i2c_master_bus_handle_t bus;
 static i2c_master_dev_handle_t oled;
 static DisplayParser parser;
+static Nrf24Esp control_radio;
 static char screen[DISPLAY_ROWS][DISPLAY_COLS + 1];
 /* 5 columns, bit 0 at top, one blank column between characters. */
 static const uint8_t digits[10][5] = {
@@ -109,11 +112,23 @@ void app_main(void)
     ESP_ERROR_CHECK(uart_param_config(UART_NUM_1, &uart_config));
     ESP_ERROR_CHECK(uart_set_pin(UART_NUM_1, CONFIG_QUAD_LINK_TX, CONFIG_QUAD_LINK_RX,
                                 UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+    int control_online = nrf24_esp_init(&control_radio, CONFIG_QUAD_NRF_SCK,
+                                        CONFIG_QUAD_NRF_MOSI, CONFIG_QUAD_NRF_MISO,
+                                        CONFIG_QUAD_NRF_CSN, CONFIG_QUAD_NRF_CE) == ESP_OK;
+    if (!control_online)
+        ESP_LOGW(TAG, "NRF24 offline; control forwarding disabled");
     strcpy(screen[0], "QUAD SENSOR MONITOR");
     strcpy(screen[3], "WAIT STM32 DATA");
     int online = start_oled(), received = 0, stale = 0, dirty = 1;
     TickType_t last_rx = xTaskGetTickCount(), last_retry = last_rx, last_draw = last_rx;
     for (;;) {
+        uint8_t control_frame[32];
+        if (control_online &&
+            nrf24_esp_receive(&control_radio, control_frame, CONTROL_FRAME_SIZE)) {
+            /* F411 receives commands on the same full-duplex UART used for OLED data. */
+            (void)uart_write_bytes(UART_NUM_1, (const char *)control_frame,
+                                   CONTROL_FRAME_SIZE);
+        }
         uint8_t bytes[256];
         int n = uart_read_bytes(UART_NUM_1, bytes, sizeof(bytes), pdMS_TO_TICKS(20));
         for (int i = 0; i < n; ++i) {

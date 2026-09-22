@@ -29,7 +29,8 @@ with tempfile.TemporaryDirectory(prefix="quad-check-") as tmp:
     flags = ["-mcpu=cortex-m4", "-mthumb", "-mfpu=fpv4-sp-d16", "-mfloat-abi=hard",
              "-std=c99", "-Os", "-ffunction-sections", "-fdata-sections",
              "-Wall", "-Wextra", "-Werror", "-DUSE_HAL_DRIVER", "-DSTM32F411xE",
-             "-Isoftware/Core/Inc", "-Isoftware/Drivers/STM32F4xx_HAL_Driver/Inc",
+             "-Isoftware/Core/Inc", "-Isoftware/Common",
+             "-Isoftware/Drivers/STM32F4xx_HAL_Driver/Inc",
              "-Isoftware/Drivers/CMSIS/Device/ST/STM32F4xx/Include",
              "-Isoftware/Drivers/CMSIS/Include"]
     objects = []

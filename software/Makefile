@@ -7,7 +7,7 @@ SIZE := $(CROSS_COMPILE)size
 BUILD := build
 TARGET := $(BUILD)/quad
 CPU := -mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard
-CPPFLAGS := -DUSE_HAL_DRIVER -DSTM32F411xE  -ICore/Inc -IDrivers/STM32F4xx_HAL_Driver/Inc  -IDrivers/CMSIS/Device/ST/STM32F4xx/Include -IDrivers/CMSIS/Include
+CPPFLAGS := -DUSE_HAL_DRIVER -DSTM32F411xE  -ICore/Inc -ICommon -IDrivers/STM32F4xx_HAL_Driver/Inc  -IDrivers/CMSIS/Device/ST/STM32F4xx/Include -IDrivers/CMSIS/Include
 CFLAGS := $(CPU) -std=c99 -Os -g3 -Wall -Wextra  -ffunction-sections -fdata-sections -MMD -MP
 HAL := Drivers/STM32F4xx_HAL_Driver/Src
 HAL_MODULES := adc adc_ex i2c uart rcc rcc_ex flash flash_ex flash_ramfunc  gpio dma_ex dma pwr pwr_ex cortex exti
@@ -43,7 +43,8 @@ size: $(TARGET).elf
 # Explicitly requested by the operator; not part of the default build.
 OPENOCD ?= openocd
 flash: $(TARGET).elf
-	$(OPENOCD) -f interface/stlink.cfg -f target/stm32f4x.cfg 	 -c "program $(TARGET).elf verify reset exit"
+	$(OPENOCD) -d0 -f interface/stlink.cfg -f target/stm32f4x.cfg \
+	 -c "adapter speed 1800; program $(TARGET).elf verify reset exit"
 
 clean:
 	rm -rf $(BUILD)

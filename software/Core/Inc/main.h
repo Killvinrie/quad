@@ -57,8 +57,6 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define KEY3_Pin GPIO_PIN_13
-#define KEY3_GPIO_Port GPIOC
 #define MPU_INT_Pin GPIO_PIN_0
 #define MPU_INT_GPIO_Port GPIOA
 #define Bateery_ADC_Pin GPIO_PIN_1
@@ -67,10 +65,6 @@ void Error_Handler(void);
 #define ESP32_TX_GPIO_Port GPIOA
 #define ESP32_RX_Pin GPIO_PIN_3
 #define ESP32_RX_GPIO_Port GPIOA
-#define KEY1_Pin GPIO_PIN_4
-#define KEY1_GPIO_Port GPIOA
-#define KEY2_Pin GPIO_PIN_5
-#define KEY2_GPIO_Port GPIOA
 #define SWITCH1_Pin GPIO_PIN_6
 #define SWITCH1_GPIO_Port GPIOA
 #define SWITCH2_Pin GPIO_PIN_7

@@ -3,8 +3,10 @@
 #include "main.h"
 #include "gps_nmea.h"
 #include "bmp388_math.h"
+#include "control_app.h"
 #include "../../Common/display_link.h"
 #include <stdio.h>
+#include <math.h>
 #include <string.h>
 
 extern ADC_HandleTypeDef hadc1;
@@ -12,8 +14,14 @@ static I2C_HandleTypeDef imu_bus, baro_bus;
 static UART_HandleTypeDef gps_uart, link_uart;
 static uint16_t imu_address, baro_address;
 static uint8_t imu_ready, baro_ready, imu_valid, baro_valid, adc_valid;
-static int32_t acc[3], gyro[3], imu_temp, baro_temp, pressure;
-static uint32_t imu_tick, baro_tick, adc_mv, adc_raw;
+static int32_t acc[3], gyro[3], imu_temp, baro_temp, pressure, altitude_cm;
+static uint32_t imu_tick, baro_tick, adc_mv, source_mv, adc_raw;
+static int32_t reference_pressure;
+static int32_t pressure_filtered, altitude_filtered_cm;
+static int64_t baseline_pressure_sum;
+static uint32_t baseline_pressure_count;
+static int32_t adc_raw_filtered;
+static uint8_t adc_filter_initialized, imu_filter_initialized;
 static BmpCalibration calibration;
 static GpsFix gps;
 static uint8_t gps_seen;
@@ -26,47 +34,47 @@ static volatile uint8_t gps_overflow;
 static char gps_line[128];
 static unsigned gps_used;
 static unsigned display_page;
-typedef struct {
-    GPIO_TypeDef *port;
-    uint16_t pin;
-    GPIO_PinState raw, stable;
-    uint32_t changed_at;
-} PageKey;
-/* PCB buttons have external pull-ups: pressed = low. */
-static PageKey page_keys[] = {
-    {KEY1_GPIO_Port, KEY1_Pin, GPIO_PIN_SET, GPIO_PIN_SET, 0},
-    {KEY2_GPIO_Port, KEY2_Pin, GPIO_PIN_SET, GPIO_PIN_SET, 0},
-    {KEY3_GPIO_Port, KEY3_Pin, GPIO_PIN_SET, GPIO_PIN_SET, 0}
-};
-static void init_page_keys(void)
+#define PAGE_SELECT_STABLE_MS 30U
+
+static int32_t ema_i32(int32_t previous, int32_t sample, unsigned shift)
+{
+    int32_t delta = sample - previous;
+    int32_t step = delta / (int32_t)(1U << shift);
+    /* Keep the filter responsive to small changes despite integer arithmetic. */
+    if (step == 0 && delta != 0) step = delta > 0 ? 1 : -1;
+    return previous + step;
+}
+
+/* SW5: active-low 4-bit DIP code, bit0=SWITCH1 ... bit3=SWITCH4. */
+static unsigned read_page_switches(void)
+{
+    unsigned code = 0;
+    if (HAL_GPIO_ReadPin(SWITCH1_GPIO_Port, SWITCH1_Pin) == GPIO_PIN_RESET) code |= 1U;
+    if (HAL_GPIO_ReadPin(SWITCH2_GPIO_Port, SWITCH2_Pin) == GPIO_PIN_RESET) code |= 2U;
+    if (HAL_GPIO_ReadPin(SWITCH3_GPIO_Port, SWITCH3_Pin) == GPIO_PIN_RESET) code |= 4U;
+    if (HAL_GPIO_ReadPin(SWITCH4_GPIO_Port, SWITCH4_Pin) == GPIO_PIN_RESET) code |= 8U;
+    return code;
+}
+
+static void init_page_switches(void)
 {
     display_page = 0;
-    for (unsigned i = 0; i < 3; ++i) {
-        page_keys[i].raw = HAL_GPIO_ReadPin(page_keys[i].port, page_keys[i].pin);
-        page_keys[i].stable = page_keys[i].raw;
-        page_keys[i].changed_at = HAL_GetTick();
-    }
 }
-static void poll_page_keys(uint32_t now)
+
+static void poll_page_switches(uint32_t now)
 {
-    unsigned pressed = 0;
-    for (unsigned i = 0; i < 3; ++i) {
-        PageKey *key = &page_keys[i];
-        GPIO_PinState raw = HAL_GPIO_ReadPin(key->port, key->pin);
-        if (raw != key->raw) {
-            key->raw = raw;
-            key->changed_at = now;
-        }
-        if (key->stable != key->raw &&
-            (uint32_t)(now - key->changed_at) >= 30U) {
-            key->stable = key->raw;
-            if (key->stable == GPIO_PIN_RESET) pressed |= 1U << i;
-        }
+    static unsigned raw_code, stable_code;
+    static uint32_t changed_at;
+    unsigned code = read_page_switches();
+    if (code != raw_code) {
+        raw_code = code;
+        changed_at = now;
     }
-    /* One event per press, no hold repeat. Home wins simultaneous presses. */
-    if (pressed & 4U) display_page = 0;
-    else if (pressed == 1U) display_page = (display_page + 1U) % 3U;
-    else if (pressed == 2U) display_page = (display_page + 2U) % 3U;
+    if (stable_code == raw_code || (uint32_t)(now - changed_at) < PAGE_SELECT_STABLE_MS)
+        return;
+    stable_code = raw_code;
+    /* 0000=MPU, 0001=BMP/ADC, 0010=GPS; other codes hold page. */
+    if (stable_code <= 2U) display_page = stable_code;
 }
 
 static int read_reg(I2C_HandleTypeDef *bus, uint16_t addr, uint8_t reg,
@@ -92,6 +100,7 @@ static uint16_t probe(I2C_HandleTypeDef *bus, uint8_t first, uint8_t reg, uint8_
 static void init_imu(void)
 {
     imu_valid = imu_ready = 0;
+    imu_filter_initialized = 0;
     imu_address = probe(&imu_bus, 0x68, 0x75, 0x68);
     if (!imu_address || !write_reg(&imu_bus, imu_address, 0x6b, 0x80)) return;
     HAL_Delay(100);
@@ -108,6 +117,11 @@ static void init_baro(void)
 {
     uint8_t raw[21], status;
     baro_valid = baro_ready = 0;
+    reference_pressure = 0;
+    pressure_filtered = 0;
+    altitude_filtered_cm = 0;
+    baseline_pressure_sum = 0;
+    baseline_pressure_count = 0;
     baro_address = probe(&baro_bus, 0x76, 0, 0x50);
     if (!baro_address ||
         !read_reg(&baro_bus, baro_address, 3, &status, 1) || !(status & 0x10) ||
@@ -148,10 +162,22 @@ static void sample_sensors(void)
                 imu_valid = imu_ready = 0;
             } else {
                 for (unsigned i = 0; i < 3; ++i) {
-                    acc[i] = be16(raw + 2 * i) * 1000 / 16384;
-                    gyro[i] = be16(raw + 8 + 2 * i) * 100 / 131;
+                    int32_t acc_sample = be16(raw + 2 * i) * 1000 / 16384;
+                    int32_t gyro_sample = be16(raw + 8 + 2 * i) * 100 / 131;
+                    if (!imu_filter_initialized) {
+                        acc[i] = acc_sample;
+                        gyro[i] = gyro_sample;
+                    } else {
+                        acc[i] = ema_i32(acc[i], acc_sample, SENSOR_IMU_FILTER_SHIFT);
+                        gyro[i] = ema_i32(gyro[i], gyro_sample, SENSOR_IMU_FILTER_SHIFT);
+                    }
                 }
-                imu_temp = be16(raw + 6) * 100 / 340 + 3653;
+                {
+                    int32_t temp_sample = be16(raw + 6) * 100 / 340 + 3653;
+                    imu_temp = imu_filter_initialized ?
+                        ema_i32(imu_temp, temp_sample, SENSOR_IMU_FILTER_SHIFT) : temp_sample;
+                }
+                imu_filter_initialized = 1;
                 imu_tick = HAL_GetTick(); imu_valid = 1;
             }
         }
@@ -166,6 +192,29 @@ static void sample_sensors(void)
                                   &baro_temp, &pressure)) {
                 baro_valid = baro_ready = 0;
             } else {
+                if (pressure_filtered == 0)
+                    pressure_filtered = pressure;
+                else
+                    pressure_filtered = ema_i32(pressure_filtered, pressure,
+                                                SENSOR_BARO_FILTER_SHIFT);
+                if (baseline_pressure_count < SENSOR_BARO_BASELINE_SAMPLES) {
+                    baseline_pressure_sum += pressure_filtered;
+                    ++baseline_pressure_count;
+                    reference_pressure = (int32_t)(baseline_pressure_sum /
+                                                   baseline_pressure_count);
+                    altitude_filtered_cm = 0;
+                }
+                if (reference_pressure > 0 &&
+                    baseline_pressure_count >= SENSOR_BARO_BASELINE_SAMPLES) {
+                    double ratio = (double)pressure_filtered /
+                                   (double)reference_pressure;
+                    double altitude = 44330.0 * (1.0 - pow(ratio, 0.190294957));
+                    int32_t altitude_sample = (int32_t)(altitude * 100.0 +
+                                                         (altitude < 0 ? -0.5 : 0.5));
+                    altitude_filtered_cm = ema_i32(altitude_filtered_cm,
+                                                   altitude_sample, 2U);
+                    altitude_cm = altitude_filtered_cm;
+                }
                 baro_tick = HAL_GetTick(); baro_valid = 1;
             }
         }
@@ -259,12 +308,13 @@ static void send_screen(uint32_t now)
         if (baro_valid) {
             fixed(rows[2], sizeof(rows[0]), "P:", pressure, 100, 2, "HPA");
             fixed(rows[3], sizeof(rows[0]), "T:", baro_temp, 100, 2, "C");
+            fixed(rows[4], sizeof(rows[0]), "H:", altitude_cm, 100, 2, "M");
         } else strcpy(rows[2], "BMP388 OFFLINE");
         if (adc_valid) {
             snprintf(rows[5], sizeof(rows[0]), "ADC RAW:%lu", (unsigned long)adc_raw);
-            fixed(rows[6], sizeof(rows[0]), "PA1:", (int32_t)adc_mv, 1000, 3, "V");
+            fixed(rows[6], sizeof(rows[0]), "BAT:", (int32_t)source_mv, 1000, 3, "V");
         } else strcpy(rows[5], "ADC ERROR");
-        strcpy(rows[7], "PIN VOLTAGE ONLY");
+        strcpy(rows[7], "DIV:10/43 ADC");
     } else {
         strcpy(rows[0], "3/3 GPS NMEA GGA");
         if (!gps_seen || (uint32_t)(now - gps_tick) > 3000) {
@@ -292,19 +342,34 @@ void SensorApp_Init(void)
     init_i2c(&imu_bus, I2C1); init_i2c(&baro_bus, I2C2);
     init_uart(&gps_uart, USART1, SENSOR_GPS_BAUD);
     init_uart(&link_uart, USART2, SENSOR_LINK_BAUD);
+    ControlApp_Init();
     HAL_NVIC_SetPriority(USART1_IRQn, 5, 0);
     HAL_NVIC_EnableIRQ(USART1_IRQn);
     __HAL_UART_ENABLE_IT(&gps_uart, UART_IT_RXNE);
     __HAL_UART_ENABLE_IT(&gps_uart, UART_IT_ERR);
+    HAL_NVIC_SetPriority(USART2_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(USART2_IRQn);
+    __HAL_UART_ENABLE_IT(&link_uart, UART_IT_RXNE);
     HAL_Delay(100);
     init_imu(); init_baro();
-    init_page_keys();
+    init_page_switches();
+}
+
+void SensorApp_LinkIRQ(void)
+{
+    uint32_t status = USART2->SR;
+    if (status & (USART_SR_RXNE | USART_SR_ORE | USART_SR_FE |
+                  USART_SR_NE | USART_SR_PE)) {
+        uint8_t byte = (uint8_t)USART2->DR;
+        if (!(status & (USART_SR_ORE | USART_SR_FE | USART_SR_NE | USART_SR_PE)))
+            ControlApp_RxByte(byte);
+    }
 }
 void SensorApp_Poll(void)
 {
     static uint32_t sample_tick, screen_tick, retry_tick;
     uint32_t now = HAL_GetTick();
-    poll_page_keys(now);
+    poll_page_switches(now);
     poll_gps();
     if ((uint32_t)(now - sample_tick) >= 20) {
         sample_tick = now; sample_sensors();
@@ -318,8 +383,19 @@ void SensorApp_Poll(void)
     if ((uint32_t)(now - screen_tick) >= 200) {
         screen_tick = now; adc_valid = 0;
         if (HAL_ADC_Start(&hadc1) == HAL_OK && HAL_ADC_PollForConversion(&hadc1, 5) == HAL_OK) {
-            adc_raw = HAL_ADC_GetValue(&hadc1);
+            int32_t adc_sample = (int32_t)HAL_ADC_GetValue(&hadc1);
+            if (!adc_filter_initialized) {
+                adc_raw_filtered = adc_sample;
+                adc_filter_initialized = 1;
+            } else {
+                adc_raw_filtered = ema_i32(adc_raw_filtered, adc_sample,
+                                           SENSOR_ADC_FILTER_SHIFT);
+            }
+            adc_raw = (uint32_t)adc_raw_filtered;
             adc_mv = (adc_raw * SENSOR_ADC_VREF_MV + 2047) / 4095;
+            source_mv = (adc_mv * SENSOR_DIVIDER_DENOMINATOR +
+                         SENSOR_DIVIDER_NUMERATOR / 2U) /
+                        SENSOR_DIVIDER_NUMERATOR;
             adc_valid = 1;
         }
         (void)HAL_ADC_Stop(&hadc1);

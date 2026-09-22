@@ -1,6 +1,6 @@
 # 传感器采集与 OLED 程序完整流程
 
-本文件对应当前按键切页版本，覆盖 `software/Core` 的 STM32 固件、`software/Common/display_link.h` 共用协议，以及 `software/esp32_oled` 的 ESP32 显示固件。图使用 Mermaid，在支持 Mermaid 的 Markdown 阅读器中可直接显示。寄存器值、公式和分支均按本仓库实现整理。
+本文件对应当前拨码切页版本，覆盖 `software/Core` 的 STM32 固件、`software/Common/display_link.h` 共用协议，以及 `software/esp32_oled` 的 ESP32 显示固件。图使用 Mermaid，在支持 Mermaid 的 Markdown 阅读器中可直接显示。寄存器值、公式和分支均按本仓库实现整理。
 
 `test/wifi_test`、`test/hello_world` 是独立实验工程，不参与当前固件运行。当前程序没有电机控制、姿态融合、Wi-Fi 或 OTA 运行链路。
 
@@ -12,7 +12,7 @@ flowchart LR
     BMP["BMP388<br/>压力 / 温度 / 出厂校准参数"] <-->|"I2C2 100kHz<br/>PB10 SCL / PB3 SDA"| STM
     GPS["GPS 模块<br/>NMEA GGA"] -->|"9600 8N1<br/>GPS TX → PA10 USART1 RX"| STM
     ADC["电压采样信号"] -->|"PA1 / ADC1 CH1"| STM
-    KEY["KEY1 PA4 / KEY2 PA5 / KEY3 PC13<br/>低电平按下"] --> STM
+    KEY["SW5 四位拨码<br/>SWITCH1 PA6、2 PA7、3 PA8、4 PB9"] --> STM
     STM -->|"USART2 PA2 TX → GPIO18 RX<br/>115200 8N1 / 173字节显示帧"| ESP["ESP32-S3 UART1<br/>帧校验、文字转点阵"]
     ESP -->|"I2C0 100kHz<br/>GPIO5 SCL / GPIO6 SDA"| OLED["SSD1306<br/>128×64 OLED"]
 ```
@@ -37,13 +37,13 @@ flowchart TD
     C --> D["__libc_init_array → main"]
     D --> E["HAL_Init<br/>初始化 HAL / SysTick 毫秒计时"]
     E --> F["SystemClock_Config<br/>25MHz HSE → PLL → 100MHz SYSCLK"]
-    F --> G["MX_GPIO_Init<br/>按键输入 / I2C与UART引脚复用"]
+    F --> G["MX_GPIO_Init<br/>拨码输入 / I2C与UART引脚复用"]
     G --> H["MX_ADC1_Init<br/>PA1 / 12位 / 单次软件触发"]
     H --> I["SensorApp_Init<br/>使能 I2C1、I2C2、USART1、USART2 时钟"]
     I --> J["两路 I2C 初始化为 100kHz<br/>GPS 9600 / 显示链路 115200"]
     J --> K["USART1 中断优先级 5<br/>开启 RXNE 和 ERR 中断"]
     K --> L["等待 100ms<br/>依次 init_imu、init_baro"]
-    L --> M["初始化按键状态<br/>display_page = 0"]
+    L --> M["初始化拨码状态<br/>display_page = 0"]
     M --> N["循环调用 SensorApp_Poll"]
     F -. "时钟初始化失败" .-> X["Error_Handler<br/>关闭中断并无限循环"]
     H -. "ADC 初始化失败" .-> X
@@ -58,7 +58,7 @@ GCC 启动实现见 [startup_stm32f411xe.S](../GCC/startup_stm32f411xe.S)，时�
 
 ```mermaid
 flowchart TD
-    A["SensorApp_Poll<br/>now = HAL_GetTick"] --> B["poll_page_keys<br/>读取按键并更新页面"]
+    A["SensorApp_Poll<br/>now = HAL_GetTick"] --> B["poll_page_switches<br/>读取四位拨码并更新页面"]
     B --> C["poll_gps<br/>消费中断环形缓冲 / 解析完整 GGA"]
     C --> D{"距上次传感器轮询 ≥ 20ms？"}
     D -- 是 --> E["sample_tick = now<br/>先处理 MPU，再处理 BMP"]
@@ -79,13 +79,13 @@ flowchart TD
 
 | 任务 | 时间设置 | 说明 |
 | --- | --- | --- |
-| 按键扫描与 GPS 解析 | 每次主循环 | 没有独立任务线程 |
+| 拨码扫描与 GPS 解析 | 每次主循环 | 没有独立任务线程；编码稳定30ms后生效 |
 | MPU/BMP 状态轮询 | 间隔达到 20ms 时执行 | 有数据就读，没有就绪则保留上次值 |
 | 传感器重试 | 每 2000ms 检查一次 | 共用重试时间戳，并非每颗设备从报错时刻单独倒计时 |
 | ADC / 显示发送 | 间隔达到 200ms 时执行 | 无论当前哪页，都会采 ADC |
 | 主循环末尾 | 延时 1ms | 不是整个主循环仅耗时 1ms |
 
-这些间隔是“达到阈值后执行”，不是实时定时器保证的精确周期。I²C 阻塞读写、串口发送、设备初始化延时都会延后下一次循环。按键切页也要等后续显示发送及 ESP32 绘制，并非 GPIO 变化后立即上屏。
+这些间隔是“达到阈值后执行”，不是实时定时器保证的精确周期。I²C 阻塞读写、串口发送、设备初始化延时都会延后下一次循环。拨码切页也要等后续显示发送及 ESP32 绘制，并非 GPIO 变化后立即上屏。
 
 ## 4. I²C 寄存器通信的字节过程
 
@@ -245,7 +245,7 @@ flowchart LR
     D --> E
     E --> F["有限数检查<br/>T在-40至85°C<br/>P在30000至125000Pa"]
     F --> G["温度转百分之一°C整数<br/>压力转Pa整数"]
-    G --> H["P/100 显示 hPa<br/>温度 /100 显示°C"]
+    G --> H["P/100 显示 hPa<br/>温度 /100 显示°C<br/>相对高度 H 显示 m"]
 ```
 
 ```text
@@ -262,7 +262,7 @@ P = p[4] + T × (p[5] + T × (p[6] + T × p[7]))
 压力整数 = trunc(P + 0.5)
 ```
 
-所有补偿中间值使用 `double`。显示气压时以 100 为小数缩放系数，把 Pa 显示为 hPa，保留两位小数；没有转换成海拔高度。
+所有补偿中间值使用 `double`。显示气压时以 100 为小数缩放系数，把 Pa 显示为 hPa，保留两位小数。压力先使用 1/8 新样本的一阶低通；上电后累计 32 个有效滤波压力样本求平均作为基准 `P0`，期间高度保持 0m。之后使用 `H=44330×(1-(P/P0)^0.190294957)` 计算相对高度，再使用 1/4 新样本的一阶低通，显示米并保留两位小数。滤波只抑制噪声，不对高度做死区或自动归零处理；基准只在本次上电周期内有效。MPU 和 ADC 也分别使用 1/4 新样本的一阶低通。
 
 ## 8. GPS：中断接收与主循环解析
 
@@ -334,7 +334,7 @@ $GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*47\r\n
 
 quality=0 的合法 GGA 也刷新接收时间，显示 `WAITING FOR FIX`。从未收到合法 GGA，或距最近合法 GGA 超过 3000ms，显示 `NO GGA / TIMEOUT`。非零质量均按当前实现显示坐标，没有进一步区分自主定位、差分、估算等质量含义。
 
-## 9. ADC 与按键处理
+## 9. ADC 与拨码页面选择
 
 ```mermaid
 flowchart TD
@@ -352,26 +352,19 @@ ADC1：PA1/channel 1，12 位右对齐，非连续、非扫描，软件触发，
 
 ```mermaid
 flowchart TD
-    A["每次主循环扫描三个键"] --> B["读取GPIO<br/>低电平=按下"]
-    B --> C{"与上次 raw 不同？"}
+    A["每次主循环扫描SW5四位拨码"] --> B["读取GPIO<br/>低电平=开关接通"]
+    B --> C{"编码和上次 raw 不同？"}
     C -- 是 --> D["更新 raw 和 changed_at"]
     C -- 否 --> E{"stable与raw不同<br/>且保持至少30ms？"}
     D --> E
     E -- 否 --> Z["本键无事件"]
-    E -- 是 --> F["stable = raw"]
-    F --> G{"新稳定状态为低？"}
-    G -- 否 --> Z
-    G -- 是 --> H["设置本键按下事件位"]
-    H --> I["全部键扫描完成，合并事件"]
-    Z --> I
-    I --> J{"本轮事件组合？"}
-    J -- 含KEY3 --> K["page=0，MPU首页"]
-    J -- 仅KEY1 --> L["page=(page+1) mod 3"]
-    J -- 仅KEY2 --> M["page=(page+2) mod 3"]
-    J -- 无事件或KEY1加KEY2 --> N["页面不变"]
+    E -- 是 --> F["stable_code = raw_code"]
+    F --> G{"编码是0、1、2？"}
+    G -- 否 --> Z["保持当前页面"]
+    G -- 是 --> H["page=编码：MPU/BMP/GPS"]
 ```
 
-KEY1=PA4，KEY2=PA5，KEY3=PC13，外部上拉，GPIO 内部不启用上下拉。初始化把当前电平同时存入 raw/stable，因此上电按住的按键不会立即切页；需要先松开再按。长按没有重复事件。图中“同时按下”指同一轮扫描产生事件，不是组合键锁定机制。
+SWITCH1=PA6、SWITCH2=PA7、SWITCH3=PA8、SWITCH4=PB9，软件启用内部上拉，开关接通为低电平。四位编码为 `code = SW1 + 2×SW2 + 4×SW3 + 8×SW4`。`0000`、`0001`、`0010` 分别选择 MPU、BMP/ADC、GPS；其他编码保持上一页。拨码编码连续稳定30ms后生效，不存在长按连翻逻辑。
 
 页面顺序：0=MPU6050，1=BMP388/ADC，2=GPS。页面变化不影响所有传感器的持续轮询和 GPS 接收。
 
@@ -396,7 +389,7 @@ flowchart LR
 | MPU | 7 | 温度，单位 C，2位小数 |
 | BMP/ADC | 0 | `2/3 BMP388 / ADC` |
 | BMP/ADC | 2、3 | 压力 HPA、温度 C |
-| BMP/ADC | 5、6、7 | ADC RAW、PA1电压 V、`PIN VOLTAGE ONLY` |
+| BMP/ADC | 4、5、6、7 | 相对高度 H、ADC RAW、还原后的原电压 BAT、`DIV:10/43 ADC` |
 | GPS | 0、1 | 页标题、FIX质量与SAT卫星数 |
 | GPS | 2–5 | 经纬度格式标题、原始度分字符串和方向 |
 
@@ -533,7 +526,24 @@ pixels[1 + 字符序号×6 + 字模列号] = glyph(字符, 字模列号)
 
 加上每次交易的地址字节及 ACK，100kHz下纯位传输时间约 `(1064+16)×9/100000 = 97.2ms`，未计 START/STOP、驱动调度与异常等待。屏幕按页依次改写，没有双缓冲或垂直同步，逻辑上的整帧接收不等于屏幕硬件一次性刷新。当前没有差分刷新，dirty是“有新帧/新状态待画”，不是“字符内容确实不同”。
 
-## 13. 异常与恢复汇总
+## 13. 遥控器控制链与 F411 接收
+
+```mermaid
+flowchart LR
+    A["F103 PA0..PA3<br/>四路摇杆 ADC"] --> B["ControllerApp_Poll<br/>20 ms 采样"]
+    K["F103 八个按键<br/>低电平按下"] --> B
+    B --> C["control_encode<br/>QCTRL v1 / CRC16"]
+    C --> D["NRF24L01<br/>1 Mbps / CH76 / QDRC1"]
+    D --> E["ESP32-S3 NRF24 接收"]
+    E --> F["UART1<br/>ESP GPIO17 TX → F411 PA3 RX"]
+    F --> G["USART2 RX 中断<br/>SensorApp_LinkIRQ"]
+    G --> H["ControlApp_RxByte<br/>滑动同步 + CRC 校验"]
+    H --> I["ControlApp_GetLatest<br/>最新轴量/按键/250 ms 超时"]
+```
+
+QCTRL v1 固定 20 字节：`51 43 01` 帧头、序号、YAW/THR/PITCH/ROLL 四个小端 16 位 ADC 值、8 个按键位、flags、电池电压字段、保留字节和 CRC16-CCITT。ESP32 将有效 NRF24 载荷原样写入 F411 USART2；F411 不在中断中执行电机控制，只更新最新命令快照。飞控主循环必须检查 `ControlApp_GetLatest()` 的返回值，超过 250ms 无帧时进入失控保护。
+
+## 14. 异常与恢复汇总
 
 | 异常 | 立即动作 | 恢复路径 |
 | --- | --- | --- |
@@ -553,18 +563,20 @@ pixels[1 + 字符序号×6 + 字模列号] = glyph(字符, 字模列号)
 
 错误检测的时间点受主循环阻塞影响，上表时间都是程序判断阈值，而非严格的最长故障响应时间。
 
-## 14. 图与代码的对应关系
+## 15. 图与代码的对应关系
 
 | 内容 | 源文件与主要函数 |
 | --- | --- |
 | 复位、段初始化、向量表 | [GCC/startup_stm32f411xe.S](../GCC/startup_stm32f411xe.S) |
 | 内存布局 | [GCC/stm32f411xe.ld](../GCC/stm32f411xe.ld)：512KiB Flash / 128KiB RAM，4KiB栈、2KiB堆 |
 | 主函数、GPIO、ADC、时钟 | [Core/Src/main.c](../Core/Src/main.c) |
-| 调度、传感器寄存器、按键、页面 | [Core/Src/sensor_app.c](../Core/Src/sensor_app.c)：SensorApp_Init / SensorApp_Poll / send_screen |
+| 调度、传感器寄存器、拨码、页面 | [Core/Src/sensor_app.c](../Core/Src/sensor_app.c)：SensorApp_Init / SensorApp_Poll / send_screen |
 | BMP系数及公式 | [Core/Src/bmp388_math.c](../Core/Src/bmp388_math.c) |
 | GPS句子校验 | [Core/Src/gps_nmea.c](../Core/Src/gps_nmea.c)：Gps_ParseGga |
 | GPS与SysTick中断入口 | [Core/Src/stm32f4xx_it.c](../Core/Src/stm32f4xx_it.c) |
 | 两端共用显示协议 | [Common/display_link.h](../Common/display_link.h)：display_encode / display_feed / display_crc |
+| 遥控器控制协议 | [Common/control_link.h](../Common/control_link.h)：control_encode / control_feed / control_decode |
+| F411 控制帧接收 | [Core/Src/control_app.c](../Core/Src/control_app.c)：ControlApp_RxByte / ControlApp_GetLatest |
 | ESP32接收和OLED | [esp32_oled/main/oled_main.c](../esp32_oled/main/oled_main.c)：app_main / start_oled / draw_screen / glyph |
 | STM32配置常量 | [Core/Inc/sensor_config.h](../Core/Inc/sensor_config.h) |
 | ESP32默认参数 | [esp32_oled/main/Kconfig.projbuild](../esp32_oled/main/Kconfig.projbuild)，实际构建以sdkconfig为准 |

@@ -7,6 +7,14 @@
 #define SENSOR_I2C_HZ 100000U
 #define SENSOR_IO_TIMEOUT_MS 20U
 #define SENSOR_RETRY_MS 2000U
-/* Divider ratio is unknown: report ADC pin voltage, NOT battery voltage. */
+/* ADC input is 10/43 of source voltage; software reports reconstructed source. */
 #define SENSOR_ADC_VREF_MV 3300U
+/* Battery divider: ADC input is 10/43 of the source voltage. */
+#define SENSOR_DIVIDER_NUMERATOR 10U
+#define SENSOR_DIVIDER_DENOMINATOR 43U
+/* Sensor smoothing: EMA shift 3 = 1/8 new sample, startup pressure baseline. */
+#define SENSOR_BARO_FILTER_SHIFT 3U
+#define SENSOR_BARO_BASELINE_SAMPLES 32U
+#define SENSOR_IMU_FILTER_SHIFT 2U
+#define SENSOR_ADC_FILTER_SHIFT 2U
 #endif

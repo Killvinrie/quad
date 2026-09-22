@@ -352,6 +352,7 @@
         <option>
           <name>CCIncludePath2</name>
           <state>$PROJ_DIR$/../Core/Inc</state>
+          <state>$PROJ_DIR$/../Common</state>
           <state>$PROJ_DIR$/../Drivers/STM32F4xx_HAL_Driver/Inc</state>
           <state>$PROJ_DIR$/../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy</state>
           <state>$PROJ_DIR$/../Drivers/CMSIS/Device/ST/STM32F4xx/Include</state>
@@ -1084,6 +1085,9 @@
         </file>
         <file>
           <name>$PROJ_DIR$/../Core/Src/sensor_app.c</name>
+        </file>
+        <file>
+          <name>$PROJ_DIR$/../Core/Src/control_app.c</name>
         </file>
         <file>
           <name>$PROJ_DIR$/../Core/Src/gps_nmea.c</name>

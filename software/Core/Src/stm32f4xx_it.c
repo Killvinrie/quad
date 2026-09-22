@@ -205,5 +205,10 @@ void USART1_IRQHandler(void)
   SensorApp_GpsIRQ();
 }
 
+void USART2_IRQHandler(void)
+{
+  SensorApp_LinkIRQ();
+}
+
 
 /* USER CODE END 1 */

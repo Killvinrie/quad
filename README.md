@@ -27,3 +27,5 @@
 已加入 STM32 传感器采集和 ESP32 OLED 显示程序，接线、构建、烧录及验证步骤见 [software/SENSORS.md](software/SENSORS.md)。
 
 完整程序流程图（含通信协议、寄存器配置、数据换算与异常恢复）见 [software/docs/PROGRAM_FLOW.md](software/docs/PROGRAM_FLOW.md)。
+
+遥控器原理图和 F103→NRF24→ESP32→F411 控制链代码见 [controller/README.md](controller/README.md)。
