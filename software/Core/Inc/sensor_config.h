@@ -1,0 +1,12 @@
+#ifndef SENSOR_CONFIG_H
+#define SENSOR_CONFIG_H
+/* PCB 2026-09-04: MPU PB6/PB7, BMP PB10/PB3, GPS PA9/PA10.
+ * STM32 PA2 TX -> ESP32 GPIO18 RX; PA3 RX <- ESP32 GPIO17 TX. */
+#define SENSOR_GPS_BAUD 9600U
+#define SENSOR_LINK_BAUD 115200U
+#define SENSOR_I2C_HZ 100000U
+#define SENSOR_IO_TIMEOUT_MS 20U
+#define SENSOR_RETRY_MS 2000U
+/* Divider ratio is unknown: report ADC pin voltage, NOT battery voltage. */
+#define SENSOR_ADC_VREF_MV 3300U
+#endif

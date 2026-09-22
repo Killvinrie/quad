@@ -21,3 +21,9 @@
 ## 2026/9/5 00.42
 
 完成了cubemx的配置，生成了初始代码。
+
+## 传感器与 OLED 联调
+
+已加入 STM32 传感器采集和 ESP32 OLED 显示程序，接线、构建、烧录及验证步骤见 [software/SENSORS.md](software/SENSORS.md)。
+
+完整程序流程图（含通信协议、寄存器配置、数据换算与异常恢复）见 [software/docs/PROGRAM_FLOW.md](software/docs/PROGRAM_FLOW.md)。

@@ -1,0 +1,21 @@
+menu "Quad sensor display"
+    config QUAD_OLED_SCL
+        int "OLED SCL GPIO"
+        default 5
+        range 0 48
+    config QUAD_OLED_SDA
+        int "OLED SDA GPIO"
+        default 6
+        range 0 48
+    config QUAD_LINK_RX
+        int "STM32 link RX GPIO (STM32 PA2)"
+        default 18
+        range 0 48
+    config QUAD_LINK_TX
+        int "STM32 link TX GPIO (STM32 PA3)"
+        default 17
+        range 0 48
+    config QUAD_LINK_BAUD
+        int "STM32 link baud rate"
+        default 115200
+endmenu
