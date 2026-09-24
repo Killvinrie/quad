@@ -50,7 +50,7 @@ static uint16_t read_buttons(void)
         if (button_same_count < 3U) ++button_same_count;
     } else {
         button_raw = raw;
-        button_same_count = 0;
+        button_same_count = 1;
     }
     /* Two consecutive 20ms samples provide a simple 40ms debounce. */
     if (button_same_count >= 2U) button_stable = button_raw;

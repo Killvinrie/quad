@@ -1087,6 +1087,12 @@
           <name>$PROJ_DIR$/../Core/Src/sensor_app.c</name>
         </file>
         <file>
+          <name>$PROJ_DIR$/../Core/Src/imu_calibration.c</name>
+        </file>
+        <file>
+          <name>$PROJ_DIR$/../Core/Src/attitude_6dof.c</name>
+        </file>
+        <file>
           <name>$PROJ_DIR$/../Core/Src/control_app.c</name>
         </file>
         <file>

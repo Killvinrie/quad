@@ -4,6 +4,8 @@
 #include "gps_nmea.h"
 #include "bmp388_math.h"
 #include "control_app.h"
+#include "imu_calibration.h"
+#include "attitude_6dof.h"
 #include "../../Common/display_link.h"
 #include <stdio.h>
 #include <math.h>
@@ -22,6 +24,9 @@ static int64_t baseline_pressure_sum;
 static uint32_t baseline_pressure_count;
 static int32_t adc_raw_filtered;
 static uint8_t adc_filter_initialized, imu_filter_initialized;
+static ImuCalibration imu_calibration;
+static Attitude6Dof attitude;
+static uint32_t attitude_tick;
 static BmpCalibration calibration;
 static GpsFix gps;
 static uint8_t gps_seen;
@@ -73,8 +78,8 @@ static void poll_page_switches(uint32_t now)
     if (stable_code == raw_code || (uint32_t)(now - changed_at) < PAGE_SELECT_STABLE_MS)
         return;
     stable_code = raw_code;
-    /* 0000=MPU, 0001=BMP/ADC, 0010=GPS; other codes hold page. */
-    if (stable_code <= 2U) display_page = stable_code;
+    /* 0000=MPU, 0001=BMP/ADC, 0010=GPS, 0011=attitude. */
+    if (stable_code <= 3U) display_page = stable_code;
 }
 
 static int read_reg(I2C_HandleTypeDef *bus, uint16_t addr, uint8_t reg,
@@ -101,6 +106,9 @@ static void init_imu(void)
 {
     imu_valid = imu_ready = 0;
     imu_filter_initialized = 0;
+    Attitude6Dof_Reset(&attitude);
+    attitude_tick = 0;
+    if (!imu_calibration.ready) ImuCalibration_Reset(&imu_calibration);
     imu_address = probe(&imu_bus, 0x68, 0x75, 0x68);
     if (!imu_address || !write_reg(&imu_bus, imu_address, 0x6b, 0x80)) return;
     HAL_Delay(100);
@@ -161,24 +169,49 @@ static void sample_sensors(void)
             if (!read_reg(&imu_bus, imu_address, 0x3b, raw, 14)) {
                 imu_valid = imu_ready = 0;
             } else {
+                int32_t acc_sample[3], gyro_sample[3];
                 for (unsigned i = 0; i < 3; ++i) {
-                    int32_t acc_sample = be16(raw + 2 * i) * 1000 / 16384;
-                    int32_t gyro_sample = be16(raw + 8 + 2 * i) * 100 / 131;
-                    if (!imu_filter_initialized) {
-                        acc[i] = acc_sample;
-                        gyro[i] = gyro_sample;
-                    } else {
-                        acc[i] = ema_i32(acc[i], acc_sample, SENSOR_IMU_FILTER_SHIFT);
-                        gyro[i] = ema_i32(gyro[i], gyro_sample, SENSOR_IMU_FILTER_SHIFT);
-                    }
+                    acc_sample[i] = be16(raw + 2 * i) * 1000 / 16384;
+                    gyro_sample[i] = be16(raw + 8 + 2 * i) * 100 / 131;
                 }
-                {
+                if (ImuCalibration_Add(&imu_calibration, acc_sample, gyro_sample)) {
+                    ImuCalibration_Apply(&imu_calibration, acc_sample, gyro_sample);
+                    /* Sensor -X points to the nose. The sign of the startup
+                     * gravity reference identifies which PCB face is up. */
+                    int32_t z_up = imu_calibration.sum[2] >= 0 ? 1 : -1;
+                    int32_t body_acc[3] = {-acc_sample[0],
+                                           -z_up * acc_sample[1],
+                                            z_up * acc_sample[2]};
+                    int32_t body_gyro[3] = {-gyro_sample[0],
+                                            -z_up * gyro_sample[1],
+                                             z_up * gyro_sample[2]};
+                    uint32_t attitude_now = HAL_GetTick();
+                    if (!attitude.ready || !attitude_tick ||
+                        (uint32_t)(attitude_now - attitude_tick) > 100U) {
+                        (void)Attitude6Dof_Init(&attitude, body_acc);
+                    } else if ((uint32_t)(attitude_now - attitude_tick) >= 5U) {
+                        Attitude6Dof_Update(&attitude, body_acc, body_gyro,
+                            (float)(attitude_now - attitude_tick) * 0.001f);
+                    }
+                    attitude_tick = attitude_now;
+                    for (unsigned i = 0; i < 3; ++i) {
+                        if (!imu_filter_initialized) {
+                            acc[i] = acc_sample[i];
+                            gyro[i] = gyro_sample[i];
+                        } else {
+                            acc[i] = ema_i32(acc[i], acc_sample[i], SENSOR_IMU_FILTER_SHIFT);
+                            gyro[i] = ema_i32(gyro[i], gyro_sample[i], SENSOR_IMU_FILTER_SHIFT);
+                        }
+                    }
                     int32_t temp_sample = be16(raw + 6) * 100 / 340 + 3653;
                     imu_temp = imu_filter_initialized ?
                         ema_i32(imu_temp, temp_sample, SENSOR_IMU_FILTER_SHIFT) : temp_sample;
+                    imu_filter_initialized = 1;
+                    imu_valid = 1;
+                } else {
+                    imu_valid = 0;
                 }
-                imu_filter_initialized = 1;
-                imu_tick = HAL_GetTick(); imu_valid = 1;
+                imu_tick = HAL_GetTick();
             }
         }
         if ((uint32_t)(HAL_GetTick() - imu_tick) > 500) imu_valid = imu_ready = 0;
@@ -293,8 +326,10 @@ static void send_screen(uint32_t now)
     uint8_t frame[DISPLAY_FRAME_SIZE];
     unsigned page = display_page;
     if (page == 0) {
-        strcpy(rows[0], "1/3 MPU6050");
+        strcpy(rows[0], "1/4 MPU6050");
         if (imu_valid) {
+            if (ImuCalibration_LargeGyroBias(&imu_calibration))
+                strcpy(rows[0], "1/4 MPU BIAS HIGH");
             for (unsigned i = 0; i < 3; ++i) {
                 const char *al[] = {"AX:", "AY:", "AZ:"};
                 const char *gl[] = {"GX:", "GY:", "GZ:"};
@@ -302,9 +337,17 @@ static void send_screen(uint32_t now)
                 fixed(rows[4+i], sizeof(rows[0]), gl[i], gyro[i], 100, 2, "D/S");
             }
             fixed(rows[7], sizeof(rows[0]), "TEMP:", imu_temp, 100, 2, "C");
-        } else { strcpy(rows[2], "OFFLINE / WAIT DATA"); strcpy(rows[4], "CHECK I2C1 PB6/PB7"); }
+        } else if (imu_ready) {
+            strcpy(rows[2], "IMU CALIBRATING");
+            strcpy(rows[4], "KEEP LEVEL AND STILL");
+            snprintf(rows[6], sizeof(rows[0]), "SAMPLES:%u/%u",
+                     imu_calibration.count, IMU_CALIBRATION_SAMPLES);
+        } else {
+            strcpy(rows[2], "OFFLINE / WAIT DATA");
+            strcpy(rows[4], "CHECK I2C1 PB6/PB7");
+        }
     } else if (page == 1) {
-        strcpy(rows[0], "2/3 BMP388 / ADC");
+        strcpy(rows[0], "2/4 BMP388 / ADC");
         if (baro_valid) {
             fixed(rows[2], sizeof(rows[0]), "P:", pressure, 100, 2, "HPA");
             fixed(rows[3], sizeof(rows[0]), "T:", baro_temp, 100, 2, "C");
@@ -315,8 +358,8 @@ static void send_screen(uint32_t now)
             fixed(rows[6], sizeof(rows[0]), "BAT:", (int32_t)source_mv, 1000, 3, "V");
         } else strcpy(rows[5], "ADC ERROR");
         strcpy(rows[7], "DIV:10/43 ADC");
-    } else {
-        strcpy(rows[0], "3/3 GPS NMEA GGA");
+    } else if (page == 2) {
+        strcpy(rows[0], "3/4 GPS NMEA GGA");
         if (!gps_seen || (uint32_t)(now - gps_tick) > 3000) {
             strcpy(rows[2], "NO GGA / TIMEOUT");
             snprintf(rows[4], sizeof(rows[0]), "BAUD:%lu", (unsigned long)SENSOR_GPS_BAUD);
@@ -328,6 +371,25 @@ static void send_screen(uint32_t now)
                 strcpy(rows[4], "LON DDDMM.MMMM");
                 snprintf(rows[5], sizeof(rows[0]), "%s %c", gps.longitude, gps.ew);
             } else strcpy(rows[3], "WAITING FOR FIX");
+        }
+    } else {
+        strcpy(rows[0], "4/4 ATTITUDE");
+        if (imu_valid && attitude.ready) {
+            float angles_deg[3] = {attitude.roll_deg, attitude.pitch_deg,
+                                   attitude.yaw_deg};
+            const char *labels[3] = {"ROLL:", "PITCH:", "YAW:"};
+            for (unsigned i = 0; i < 3; ++i) {
+                float scaled = angles_deg[i] * 100.0f;
+                int32_t centideg = (int32_t)(scaled + (scaled < 0 ? -0.5f : 0.5f));
+                fixed(rows[2+i], sizeof(rows[0]), labels[i], centideg, 100, 2, "DEG");
+            }
+            strcpy(rows[6], "X- TO NOSE, Z UP");
+            strcpy(rows[7], "YAW RELATIVE");
+        } else if (imu_ready) {
+            strcpy(rows[2], "IMU CALIBRATING");
+            strcpy(rows[4], "KEEP LEVEL AND STILL");
+        } else {
+            strcpy(rows[2], "MPU6050 OFFLINE");
         }
     }
     display_encode(frame, rows);

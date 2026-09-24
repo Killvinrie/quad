@@ -101,6 +101,8 @@ int Nrf24_Send(Nrf24 *r, const uint8_t *payload, uint8_t length)
     (void)command(r, NRF_CMD_FLUSH_TX);
     tx_payload(r, payload, length);
     ce(r, GPIO_PIN_SET);
+    HAL_Delay(2); /* Full millisecond minimum, exceeding 10 us PTX pulse. */
+    ce(r, GPIO_PIN_RESET);
     start = HAL_GetTick();
     do {
         status = command(r, NRF_CMD_NOP);

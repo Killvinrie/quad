@@ -31,8 +31,8 @@ NRF24 两端固定使用：地址 `QDRC1`、频道 76、1 Mbps、2 字节 CRC、
 
 ## 联调顺序
 
-1. 先在 CubeMX 中生成 F103 HAL 工程，启用 `controller/stm32f103/` 的应用文件和引脚配置。
-2. 烧录 F103，观察 NRF24 供电和 UART1 控制帧。
+1. 在仓库根目录执行 `make -C controller/stm32f103 -j4` 编译独立 GCC 工程；连接 ST-Link 后执行 `make -C controller/stm32f103 flash` 烧录，不需要 CubeMX。
+2. 观察 NRF24 供电和 UART1 控制帧。
 3. 在 ESP32 工程执行 `idf.py menuconfig`，设置 NRF24 实际引脚，然后编译烧录。
 4. F411 保持 USART2 与 ESP32 交叉连接：ESP32 TX→F411 PA3，F411 PA2→ESP32 RX，共地。
 5. 通过 `ControlApp_GetLatest(&command, HAL_GetTick())` 读取控制量；先做失控超时，再接入电机混控。

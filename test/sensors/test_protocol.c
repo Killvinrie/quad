@@ -6,6 +6,8 @@
 #include "control_link.h"
 #include "gps_nmea.h"
 #include "bmp388_math.h"
+#include "imu_calibration.h"
+#include "attitude_6dof.h"
 
 static void sentence(char *out, const char *body)
 {
@@ -122,9 +124,79 @@ static void test_control(void)
     frame[5] ^= 1;
     assert(!control_decode(frame, &out));
 }
+static void test_imu_calibration(void)
+{
+    ImuCalibration cal;
+    int32_t acc[3] = {80, -40, 970};
+    int32_t gyro[3] = {10000, 30, -20}; /* 100 deg/s X zero bias. */
+    ImuCalibration_Reset(&cal);
+    for (unsigned i = 0; i < IMU_CALIBRATION_SAMPLES; ++i)
+        assert(ImuCalibration_Add(&cal, acc, gyro) ==
+               (i == IMU_CALIBRATION_SAMPLES - 1));
+    assert(ImuCalibration_LargeGyroBias(&cal));
+    ImuCalibration_Apply(&cal, acc, gyro);
+    assert(acc[0] == 0 && acc[1] == 0 && acc[2] == 1000);
+    assert(gyro[0] == 0 && gyro[1] == 0 && gyro[2] == 0);
+
+    acc[0] = 180; acc[1] = -40; acc[2] = 970;
+    gyro[0] = 10500; gyro[1] = 30; gyro[2] = -20;
+    ImuCalibration_Apply(&cal, acc, gyro);
+    assert(acc[0] == 100 && acc[2] == 1000 && gyro[0] == 500);
+
+    ImuCalibration_Reset(&cal);
+    acc[0] = 0; acc[1] = 0; acc[2] = -980;
+    gyro[0] = 0; gyro[1] = 0; gyro[2] = 0;
+    for (unsigned i = 0; i < IMU_CALIBRATION_SAMPLES; ++i)
+        (void)ImuCalibration_Add(&cal, acc, gyro);
+    assert(cal.ready);
+    ImuCalibration_Apply(&cal, acc, gyro);
+    assert(acc[2] == -1000);
+
+    ImuCalibration_Reset(&cal);
+    acc[2] = 1000;
+    for (unsigned i = 0; i < 32; ++i)
+        (void)ImuCalibration_Add(&cal, acc, gyro);
+    acc[0] = 450;
+    assert(!ImuCalibration_Add(&cal, acc, gyro) && cal.count == 1);
+    ImuCalibration_Reset(&cal);
+    for (unsigned i = 0; i < IMU_CALIBRATION_SAMPLES; ++i)
+        (void)ImuCalibration_Add(&cal, acc, gyro);
+    assert(!cal.ready); /* A tilted board must not set the level reference. */
+}
+static void test_attitude(void)
+{
+    Attitude6Dof s;
+    int32_t flat[3] = {0, 0, 1000};
+    int32_t still[3] = {0, 0, 0};
+    int32_t yaw_rate[3] = {0, 0, 9000};
+    int32_t roll_30[3] = {0, 500, 866};
+    int32_t accelerated[3] = {1000, 0, 1000};
+    Attitude6Dof_Reset(&s);
+    assert(Attitude6Dof_Init(&s, flat));
+    assert(fabsf(s.roll_deg) < 0.1f && fabsf(s.pitch_deg) < 0.1f);
+    for (unsigned i = 0; i < 50; ++i)
+        Attitude6Dof_Update(&s, flat, yaw_rate, 0.02f);
+    assert(fabsf(s.yaw_deg + 90.0f) < 1.0f);
+    Attitude6Dof_Reset(&s);
+    int32_t nose_up_30[3] = {500, 0, 866};
+    assert(Attitude6Dof_Init(&s, nose_up_30));
+    assert(fabsf(s.pitch_deg - 30.0f) < 0.2f);
+    Attitude6Dof_Reset(&s);
+    assert(Attitude6Dof_Init(&s, roll_30));
+    assert(fabsf(s.roll_deg - 30.0f) < 0.2f);
+    for (unsigned i = 0; i < 100; ++i)
+        Attitude6Dof_Update(&s, flat, still, 0.02f);
+    assert(fabsf(s.roll_deg) < 5.0f); /* Gravity corrects gyro/tilt error. */
+    Attitude6Dof_Reset(&s);
+    assert(Attitude6Dof_Init(&s, flat));
+    for (unsigned i = 0; i < 100; ++i)
+        Attitude6Dof_Update(&s, accelerated, still, 0.02f);
+    assert(fabsf(s.pitch_deg) < 0.1f); /* Ignore non-1g acceleration. */
+}
 int main(void)
 {
-    test_gps(); test_frames(); test_bmp(); test_control();
-    puts("PASS: GPS, display/control CRC, BMP388 compensation");
+    test_gps(); test_frames(); test_bmp(); test_control(); test_imu_calibration();
+    test_attitude();
+    puts("PASS: GPS, CRC, BMP388, IMU calibration and attitude");
     return 0;
 }
