@@ -2,7 +2,7 @@
 
 本文件对应当前拨码切页版本，覆盖 `software/Core` 的 STM32 固件、`software/Common/display_link.h` 共用协议，以及 `software/esp32_oled` 的 ESP32 显示固件。图使用 Mermaid，在支持 Mermaid 的 Markdown 阅读器中可直接显示。寄存器值、公式和分支均按本仓库实现整理。
 
-`test/wifi_test`、`test/hello_world` 是独立实验工程，不参与当前固件运行。当前程序有六轴姿态解算，但没有电机控制、Wi-Fi 或 OTA 运行链路。
+`test/wifi_test`、`test/hello_world` 是独立实验工程，不参与当前固件运行。当前程序有六轴姿态解算、手机 Wi-Fi 控制链和四路同油门电调输出；没有姿态混控或 OTA 运行链路。
 
 ## 1. 整体数据流与接线
 
@@ -23,7 +23,7 @@ flowchart LR
 | BMP388 | 7 位地址 `0x76` 或 `0x77` | STM32 主动读取校准系数、状态和原始数据 |
 | GPS USART1 | PA9 TX / PA10 RX，9600 baud，8N1，无流控，16 倍过采样 | 只接收模块主动输出的 GGA，不发送模块配置命令 |
 | STM32→ESP32 | PA2 TX→GPIO18 RX，115200 baud，8N1，无流控 | 只发送当前页面文字，无应答、序号或逐帧重传 |
-| 预留反向串口 | ESP32 GPIO17 TX→STM32 PA3 RX | 已配置引脚，应用没有使用反向数据 |
+| 手机控制串口 | ESP32 GPIO17 TX→STM32 PA3 RX，115200 baud，8N1 | 接收 QCTRL v1 控制帧并校验 CRC |
 | OLED | `0x3C` 或 `0x3D`，100kHz | ESP32 主动写命令及像素；没有读取屏幕内容或芯片 ID |
 
 STM32 的 I²C HAL 接口接收的是左移一位后的地址：`7位地址 << 1`；ESP-IDF 的 OLED 接口使用原始 7 位地址。两者不能直接混用。
@@ -50,7 +50,7 @@ flowchart TD
     J -. "I2C或UART HAL初始化失败" .-> X
 ```
 
-GCC 启动实现见 [startup_stm32f411xe.S](../GCC/startup_stm32f411xe.S)，时钟与 GPIO 见 [main.c](../Core/Src/main.c)。PLL 参数为 M=12、N=96、P=2，AHB=100MHz、APB1=50MHz、APB2=100MHz。GPIO 配置了电机相关复用引脚，但没有启动 PWM。
+GCC 启动实现见 [startup_stm32f411xe.S](../GCC/startup_stm32f411xe.S)，时钟与 GPIO 见 [main.c](../Core/Src/main.c)。PLL 参数为 M=12、N=96、P=2，AHB=100MHz、APB1=50MHz、APB2=100MHz。TIM3 使用100MHz计时器时钟，启动四路50Hz电调 PWM。
 
 传感器不存在或不应答不会进入 `Error_Handler`：只标记该传感器不可用，进入主循环继续服务其他设备。上述硬件外设 HAL 初始化失败才是致命错误。
 
@@ -546,9 +546,11 @@ flowchart LR
     F --> G["USART2 RX 中断<br/>SensorApp_LinkIRQ"]
     G --> H["ControlApp_RxByte<br/>滑动同步 + CRC 校验"]
     H --> I["ControlApp_GetLatest<br/>最新轴量/250 ms 超时"]
+    I --> J["MotorLogic<br/>解锁校验/同油门映射"]
+    J --> K["TIM3 CH1-4<br/>50Hz / PB4 PB5 PB0 PB1"]
 ```
 
-QCTRL v1 固定 20 字节：`51 43 01` 帧头、序号、YAW/THR/PITCH/ROLL 四个小端 16 位值、按键位、flags、电池电压字段、保留字节和 CRC16-CCITT。手机网页只传四轴原码及 OLED 页面选择；ESP32 填写序号、CRC，按键/flags/电池字段目前为 0。HTTP 接收任务收到完整合法请求后立即经 UART 发给 F411，OLED 主循环只读取最新状态，避免屏幕刷新阻塞控制发送。网页停止发送时 ESP32 也不再发送 UART 控制帧；F411 不在中断中执行电机控制，只更新最新命令快照。将来接入电机控制时必须检查 `ControlApp_GetLatest()` 的返回值，超过 250ms 无帧时进入失控保护。
+QCTRL v1 固定 20 字节：`51 43 01` 帧头、序号、YAW/THR/PITCH/ROLL 四个小端 16 位值、按键位、flags、电池电压字段、保留字节和 CRC16-CCITT。手机网页传四轴原码、OLED 页面与解锁请求；ESP32 将解锁请求放入 flags bit0，并填写序号与 CRC。HTTP 接收任务收到完整合法请求后立即经 UART 发给 F411，OLED 主循环只读取最新状态。网页停止发送时 ESP32 也不再发送 UART 控制帧；F411 中断只更新最新命令快照，主循环校验解锁条件并映射 1100–1940μs 同油门，TIM3 中断输出四路 50Hz。链路失效或主循环停滞超过 250ms 时回最低油门。当前无姿态混控，详见[电机说明](../MOTORS.md)。
 
 ## 14. 异常与恢复汇总
 

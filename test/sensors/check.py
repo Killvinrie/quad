@@ -19,6 +19,7 @@ with tempfile.TemporaryDirectory(prefix="quad-check-") as tmp:
          "test/sensors/test_protocol.c", "software/Core/Src/gps_nmea.c",
          "software/Core/Src/bmp388_math.c", "software/Core/Src/imu_calibration.c",
          "software/Core/Src/attitude_6dof.c",
+         "software/Core/Src/motor_logic.c",
          "software/esp32_oled/main/phone_control.c",
          "-lm", "-o", host])
     run([host])

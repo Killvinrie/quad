@@ -22,6 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "sensor_app.h"
+#include "motor_app.h"
 
 /* USER CODE END Includes */
 
@@ -90,8 +91,10 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_ADC1_Init();
+  MotorApp_Init();
   /* USER CODE BEGIN 2 */
   SensorApp_Init();
+  MotorApp_StartWatchdog();
 
   /* USER CODE END 2 */
 
@@ -103,6 +106,7 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     SensorApp_Poll();
+    MotorApp_Poll();
   }
   /* USER CODE END 3 */
 }

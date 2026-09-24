@@ -9,6 +9,7 @@
 #include "imu_calibration.h"
 #include "attitude_6dof.h"
 #include "phone_control.h"
+#include "motor_logic.h"
 
 static void sentence(char *out, const char *body)
 {
@@ -201,30 +202,70 @@ static void test_phone_control(void)
     ControlCommand decoded = {0};
     uint8_t frame[CONTROL_FRAME_SIZE];
     char rows[DISPLAY_ROWS][DISPLAY_COLS + 1];
-    const char *body = "1234,4095,2048,55,0";
+    const char *body = "1234,4095,2048,55,0,1";
     assert(PhoneControl_Parse(body, strlen(body), &input));
     assert(input.axis[0] == 1234 && input.axis[1] == 4095);
-    assert(!PhoneControl_Parse("-1,0,0,0,0", strlen("-1,0,0,0,0"), &input));
-    assert(!PhoneControl_Parse("4096,0,0,0,0", strlen("4096,0,0,0,0"), &input));
-    assert(!PhoneControl_Parse("1,2,3,4,2", strlen("1,2,3,4,2"), &input));
-    assert(!PhoneControl_Parse("1,2,3,4,0x", strlen("1,2,3,4,0x"), &input));
+    assert(!PhoneControl_Parse("-1,0,0,0,0,0", strlen("-1,0,0,0,0,0"), &input));
+    assert(!PhoneControl_Parse("4096,0,0,0,0,0", strlen("4096,0,0,0,0,0"), &input));
+    assert(!PhoneControl_Parse("1,2,3,4,2,0", strlen("1,2,3,4,2,0"), &input));
+    assert(!PhoneControl_Parse("1,2,3,4,0,2", strlen("1,2,3,4,0,2"), &input));
+    assert(!PhoneControl_Parse("1,2,3,4,0", strlen("1,2,3,4,0"), &input));
     PhoneControl_Apply(&state, &input, 100);
     assert(PhoneControl_Online(&state, 350, 250));
     PhoneControl_Encode(&state, frame);
     assert(control_decode(frame, &decoded));
     assert(decoded.axis[0] == 1234 && decoded.axis[1] == 4095);
     assert(decoded.axis[2] == 2048 && decoded.axis[3] == 55);
-    assert(decoded.buttons == 0 && decoded.flags == 0);
+    assert(decoded.buttons == 0 && decoded.flags == CONTROL_FLAG_ARM);
     PhoneControl_Render(&state, 120, 250, "QUAD-CONTROL", rows);
     assert(strstr(rows[1], "1234") && strstr(rows[2], "4095"));
     assert(!PhoneControl_Online(&state, 351, 250));
     PhoneControl_Render(&state, 351, 250, "QUAD-CONTROL", rows);
     assert(strstr(rows[0], "LINK LOST") && rows[3][0] == 0);
 }
+static void test_motor_logic(void)
+{
+    MotorLogic state;
+    ControlCommand command = {0};
+    command.axis[0] = command.axis[2] = command.axis[3] = 2048;
+    MotorLogic_Init(&state);
+    assert(MotorLogic_Update(&state, &command, 0) == MOTOR_MIN_US);
+    command.flags = CONTROL_FLAG_ARM;
+    assert(MotorLogic_Update(&state, &command, 1) == MOTOR_MIN_US);
+    command.flags = 0;
+    assert(MotorLogic_Update(&state, &command, 1) == MOTOR_MIN_US);
+    command.flags = CONTROL_FLAG_ARM;
+    command.axis[1] = 1000;
+    assert(MotorLogic_Update(&state, &command, 1) == MOTOR_MIN_US);
+    command.axis[1] = 0;
+    assert(MotorLogic_Update(&state, &command, 1) == MOTOR_MIN_US);
+    command.flags = 0;
+    assert(MotorLogic_Update(&state, &command, 1) == MOTOR_MIN_US);
+    command.flags = CONTROL_FLAG_ARM;
+    command.axis[0] = 2300;
+    assert(MotorLogic_Update(&state, &command, 1) == MOTOR_MIN_US);
+    command.axis[0] = 2048;
+    assert(MotorLogic_Update(&state, &command, 1) == MOTOR_MIN_US);
+    command.flags = 0;
+    assert(MotorLogic_Update(&state, &command, 1) == MOTOR_MIN_US);
+    command.flags = CONTROL_FLAG_ARM;
+    assert(MotorLogic_Update(&state, &command, 1) == MOTOR_MIN_US && state.armed);
+    command.axis[1] = 4095;
+    assert(MotorLogic_Update(&state, &command, 1) == MOTOR_MAX_US);
+    assert(MotorLogic_Update(&state, &command, 0) == MOTOR_MIN_US && !state.armed);
+    assert(MotorLogic_Update(&state, &command, 1) == MOTOR_MIN_US);
+    command.flags = 0;
+    assert(MotorLogic_Update(&state, &command, 1) == MOTOR_MIN_US);
+    command.flags = CONTROL_FLAG_ARM;
+    command.axis[1] = 0;
+    assert(MotorLogic_Update(&state, &command, 1) == MOTOR_MIN_US && state.armed);
+    command.flags = 0;
+    assert(MotorLogic_Update(&state, &command, 1) == MOTOR_MIN_US && !state.armed);
+}
 int main(void)
 {
     test_gps(); test_frames(); test_bmp(); test_control(); test_imu_calibration();
-    test_attitude(); test_phone_control();
-    puts("PASS: GPS, CRC, BMP388, IMU, phone control");
+    test_attitude(); test_phone_control(); test_motor_logic();
+    puts("PASS: GPS, CRC, BMP388, IMU, phone control, motor interlock");
     return 0;
 }

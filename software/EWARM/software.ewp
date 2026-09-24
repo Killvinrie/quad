@@ -1096,6 +1096,12 @@
           <name>$PROJ_DIR$/../Core/Src/control_app.c</name>
         </file>
         <file>
+          <name>$PROJ_DIR$/../Core/Src/motor_logic.c</name>
+        </file>
+        <file>
+          <name>$PROJ_DIR$/../Core/Src/motor_app.c</name>
+        </file>
+        <file>
           <name>$PROJ_DIR$/../Core/Src/gps_nmea.c</name>
         </file>
         <file>

@@ -29,3 +29,5 @@
 完整程序流程图（含通信协议、寄存器配置、数据换算与异常恢复）见 [software/docs/PROGRAM_FLOW.md](software/docs/PROGRAM_FLOW.md)。
 
 当前手机→ESP32-S3→F411 控制链见 [ESP32 手机遥控说明](software/esp32_oled/README.md)；早期 F103/NRF24 遥控器代码保留在 [controller/](controller/) 归档。
+
+四路同油门电调输出、拆桨测试与行程校准见 [电机说明](software/MOTORS.md)。

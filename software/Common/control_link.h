@@ -13,6 +13,7 @@
 #define CONTROL_FRAME_SIZE 20U
 #define CONTROL_BODY_SIZE 18U
 #define CONTROL_AXIS_COUNT 4U
+#define CONTROL_FLAG_ARM 0x01U
 
 typedef struct {
     uint8_t sequence;
