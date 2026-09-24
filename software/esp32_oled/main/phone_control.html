@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Quad 手机遥控</title>
+<style>
+  :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #101827; color: #f4f7ff; padding: 18px 16px 32px; }
+  main { max-width: 760px; margin: auto; }
+  h1 { font-size: 1.45rem; margin: 0 0 8px; }
+  p { color: #aebbd0; line-height: 1.5; margin: 0 0 14px; }
+  .status { padding: 12px; border-radius: 10px; background: #253047; margin: 12px 0; }
+  .status[data-active="yes"] { background: #164d42; }
+  .actions { display: flex; gap: 10px; margin: 12px 0 22px; }
+  button { flex: 1; min-height: 48px; border: 0; border-radius: 10px; font: inherit;
+           font-weight: 650; color: white; background: #286bd3; }
+  button.stop { background: #b83a42; }
+  button.secondary { background: #34435e; }
+  .sticks { display: flex; justify-content: space-around; gap: 12px; }
+  .unit { flex: 1; text-align: center; }
+  .unit h2 { font-size: 1rem; margin: 0 0 9px; }
+  .pad { position: relative; width: min(42vw, 230px); height: min(42vw, 230px);
+         margin: auto; border-radius: 50%; border: 2px solid #6b82a7;
+         background: radial-gradient(circle, #263a5a 0%, #172235 70%);
+         touch-action: none; user-select: none; }
+  .pad::before, .pad::after { content: ""; position: absolute; background: #415473; }
+  .pad::before { width: 1px; height: 100%; left: 50%; }
+  .pad::after { height: 1px; width: 100%; top: 50%; left: 0; }
+  .knob { position: absolute; z-index: 1; width: 44px; height: 44px; border-radius: 50%;
+          background: #74bbff; border: 3px solid #d4ecff; left: 50%; top: 50%;
+          transform: translate(-50%, -50%); box-shadow: 0 3px 14px #0008; }
+  .values { font-variant-numeric: tabular-nums; color: #d5e6ff; margin-top: 12px; line-height: 1.6; }
+  .note { margin-top: 20px; font-size: .9rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Quad 手机遥控</h1>
+  <p>先连接 ESP32 的 QUAD-CONTROL 热点，再按“开始控制”。网页需保持在前台。</p>
+  <div class="status" id="status">未开始；油门为 0</div>
+  <div class="actions"><button id="start">开始控制</button><button class="secondary" id="view">OLED：遥控数据</button></div>
+  <div class="sticks">
+    <div class="unit"><h2>左杆：偏航 / 油门</h2><div class="pad" id="left"><div class="knob"></div></div>
+      <div class="values" id="leftValues">偏航 2048<br>油门 0</div></div>
+    <div class="unit"><h2>右杆：横滚 / 俯仰</h2><div class="pad" id="right"><div class="knob"></div></div>
+      <div class="values" id="rightValues">横滚 2048<br>俯仰 2048</div></div>
+  </div>
+  <p class="note">松开左杆会将油门归零；松开右杆会回中。停止控制或切到后台后，ESP32 不再持续发送控制帧，F411 将按 250 ms 超时处理。</p>
+</main>
+<script>
+(() => {
+  const axis = { yaw: 2048, thr: 0, pitch: 2048, roll: 2048, view: 0 };
+  const status = document.getElementById('status');
+  const startButton = document.getElementById('start');
+  const viewButton = document.getElementById('view');
+  const pads = { left: document.getElementById('left'), right: document.getElementById('right') };
+  let active = false, timer = null, pending = false, sendQueued = false;
+  const clamp = (v, low, high) => Math.max(low, Math.min(high, v));
+  const raw = n => clamp(Math.round((n + 1) * 2047.5), 0, 4095);
+  function knob(side, x, y) {
+    const pad = pads[side], radius = pad.clientWidth / 2 - 24;
+    pad.querySelector('.knob').style.transform =
+      `translate(-50%, -50%) translate(${x * radius}px, ${y * radius}px)`;
+  }
+  function labels() {
+    document.getElementById('leftValues').innerHTML = `偏航 ${axis.yaw}<br>油门 ${axis.thr}`;
+    document.getElementById('rightValues').innerHTML = `横滚 ${axis.roll}<br>俯仰 ${axis.pitch}`;
+  }
+  function center(side) {
+    if (side === 'left') { axis.yaw = 2048; axis.thr = 0; knob(side, 0, 1); }
+    else { axis.roll = 2048; axis.pitch = 2048; knob(side, 0, 0); }
+    labels();
+  }
+  function move(side, event) {
+    if (!active) return;
+    const rect = pads[side].getBoundingClientRect();
+    const radius = rect.width / 2;
+    let x = (event.clientX - rect.left - radius) / radius;
+    let y = (event.clientY - rect.top - radius) / radius;
+    const length = Math.hypot(x, y);
+    if (length > 1) { x /= length; y /= length; }
+    knob(side, x, y);
+    if (side === 'left') { axis.yaw = raw(x); axis.thr = raw(-y); }
+    else { axis.roll = raw(x); axis.pitch = raw(-y); }
+    labels();
+  }
+  for (const side of ['left', 'right']) {
+    const pad = pads[side];
+    pad.addEventListener('pointerdown', event => {
+      if (!active) return;
+      pad.setPointerCapture(event.pointerId);
+      move(side, event);
+    });
+    pad.addEventListener('pointermove', event => {
+      if (pad.hasPointerCapture(event.pointerId)) move(side, event);
+    });
+    for (const type of ['pointerup', 'pointercancel', 'lostpointercapture'])
+      pad.addEventListener(type, () => center(side));
+  }
+  async function transmit(keepalive = false) {
+    if (pending) { if (keepalive) sendQueued = true; return; }
+    pending = true;
+    const body = [axis.yaw, axis.thr, axis.pitch, axis.roll, axis.view].join(',');
+    try {
+      const response = await fetch('/api/control', {
+        method: 'POST', headers: {'Content-Type': 'text/plain', 'X-Quad-Control': '1'},
+        body, cache: 'no-store', keepalive
+      });
+      if (!response.ok) throw Error('HTTP ' + response.status);
+    } catch (error) {
+      if (active) stop(false);
+      status.textContent = '连接中断；请检查 Wi-Fi 后重新开始';
+    } finally {
+      pending = false;
+      if (sendQueued) { sendQueued = false; transmit(true); }
+    }
+  }
+  function stop(sendNeutral = true) {
+    active = false;
+    clearInterval(timer); timer = null;
+    center('left'); center('right');
+    startButton.textContent = '开始控制';
+    startButton.classList.remove('stop');
+    status.dataset.active = 'no';
+    status.textContent = '已停止；油门为 0';
+    if (sendNeutral) transmit(true);
+  }
+  startButton.addEventListener('click', () => {
+    if (active) { stop(); return; }
+    active = true;
+    status.dataset.active = 'yes';
+    status.textContent = '控制中；请保持页面在前台';
+    startButton.textContent = '停止控制';
+    startButton.classList.add('stop');
+    transmit();
+    timer = setInterval(() => transmit(), 50);
+  });
+  viewButton.addEventListener('click', () => {
+    axis.view ^= 1;
+    viewButton.textContent = axis.view ? 'OLED：传感器数据' : 'OLED：遥控数据';
+    transmit(true);
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && active) stop();
+  });
+  window.addEventListener('pagehide', () => { if (active) stop(); });
+  center('left'); center('right');
+})();
+</script>
+</body>
+</html>

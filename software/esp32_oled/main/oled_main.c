@@ -8,14 +8,16 @@
 #include "esp_log.h"
 #include "display_link.h"
 #include "control_link.h"
-#include "nrf24_esp32.h"
+#include "phone_control.h"
+#include "phone_server.h"
 
 static const char *TAG = "quad_oled";
 static i2c_master_bus_handle_t bus;
 static i2c_master_dev_handle_t oled;
 static DisplayParser parser;
-static Nrf24Esp control_radio;
-static char screen[DISPLAY_ROWS][DISPLAY_COLS + 1];
+static PhoneControl phone_control;
+static char sensor_screen[DISPLAY_ROWS][DISPLAY_COLS + 1];
+static char phone_screen[DISPLAY_ROWS][DISPLAY_COLS + 1];
 /* 5 columns, bit 0 at top, one blank column between characters. */
 static const uint8_t digits[10][5] = {
     {0x3e,0x51,0x49,0x45,0x3e},{0,0x42,0x7f,0x40,0},
@@ -50,14 +52,14 @@ static uint8_t glyph(char ch, unsigned col)
     if (ch == '+') return col == 2 ? 0x3e : 8;
     return 0;
 }
-static esp_err_t draw_screen(void)
+static esp_err_t draw_screen(char rows[DISPLAY_ROWS][DISPLAY_COLS + 1])
 {
     for (unsigned row = 0; row < DISPLAY_ROWS; ++row) {
         uint8_t command[] = {0, (uint8_t)(0xb0 + row), 0, 0x10};
         uint8_t pixels[129] = {0x40};
         for (unsigned col = 0; col < DISPLAY_COLS; ++col)
             for (unsigned x = 0; x < 5; ++x)
-                pixels[1 + col * 6 + x] = glyph(screen[row][col], x);
+                pixels[1 + col * 6 + x] = glyph(rows[row][col], x);
         esp_err_t err = i2c_master_transmit(oled, command, sizeof(command), 50);
         if (err != ESP_OK) return err;
         err = i2c_master_transmit(oled, pixels, sizeof(pixels), 50);
@@ -112,38 +114,48 @@ void app_main(void)
     ESP_ERROR_CHECK(uart_param_config(UART_NUM_1, &uart_config));
     ESP_ERROR_CHECK(uart_set_pin(UART_NUM_1, CONFIG_QUAD_LINK_TX, CONFIG_QUAD_LINK_RX,
                                 UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
-    int control_online = nrf24_esp_init(&control_radio, CONFIG_QUAD_NRF_SCK,
-                                        CONFIG_QUAD_NRF_MOSI, CONFIG_QUAD_NRF_MISO,
-                                        CONFIG_QUAD_NRF_CSN, CONFIG_QUAD_NRF_CE) == ESP_OK;
-    if (!control_online)
-        ESP_LOGW(TAG, "NRF24 offline; control forwarding disabled");
-    strcpy(screen[0], "QUAD SENSOR MONITOR");
-    strcpy(screen[3], "WAIT STM32 DATA");
+    QueueHandle_t phone_queue = xQueueCreate(1, sizeof(PhoneInput));
+    ESP_ERROR_CHECK(phone_queue ? ESP_OK : ESP_ERR_NO_MEM);
+    ESP_ERROR_CHECK(PhoneServer_Start(phone_queue));
+    strcpy(sensor_screen[0], "QUAD SENSOR MONITOR");
+    strcpy(sensor_screen[3], "WAIT STM32 DATA");
     int online = start_oled(), received = 0, stale = 0, dirty = 1;
     TickType_t last_rx = xTaskGetTickCount(), last_retry = last_rx, last_draw = last_rx;
+    const uint32_t control_timeout = pdMS_TO_TICKS(250);
+    int phone_was_online = 0;
     for (;;) {
-        uint8_t control_frame[32];
-        if (control_online &&
-            nrf24_esp_receive(&control_radio, control_frame, CONTROL_FRAME_SIZE)) {
-            /* F411 receives commands on the same full-duplex UART used for OLED data. */
-            (void)uart_write_bytes(UART_NUM_1, (const char *)control_frame,
-                                   CONTROL_FRAME_SIZE);
+        PhoneInput input;
+        if (xQueueReceive(phone_queue, &input, 0) == pdTRUE) {
+            uint8_t previous_sensor_page = phone_control.latest.show_sensor;
+            PhoneControl_Apply(&phone_control, &input,
+                               (uint32_t)xTaskGetTickCount());
+            if (!phone_control.latest.show_sensor ||
+                previous_sensor_page != phone_control.latest.show_sensor)
+                dirty = 1;
         }
         uint8_t bytes[256];
         int n = uart_read_bytes(UART_NUM_1, bytes, sizeof(bytes), pdMS_TO_TICKS(20));
         for (int i = 0; i < n; ++i) {
-            if (display_feed(&parser, bytes[i], screen)) {
+            if (display_feed(&parser, bytes[i], sensor_screen)) {
                 last_rx = xTaskGetTickCount();
-                received = 1; stale = 0; dirty = 1;
+                received = 1; stale = 0;
+                if (phone_control.latest.show_sensor) dirty = 1;
             }
         }
         TickType_t now = xTaskGetTickCount();
         if (received && !stale && (TickType_t)(now - last_rx) > pdMS_TO_TICKS(2000)) {
-            memset(screen, 0, sizeof(screen));
-            strcpy(screen[0], "STM32 LINK LOST");
-            strcpy(screen[3], "CHECK UART / POWER");
-            stale = 1; dirty = 1;
+            memset(sensor_screen, 0, sizeof(sensor_screen));
+            strcpy(sensor_screen[0], "STM32 LINK LOST");
+            strcpy(sensor_screen[3], "CHECK UART / POWER");
+            stale = 1;
+            if (phone_control.latest.show_sensor) dirty = 1;
         }
+        int phone_is_online = PhoneControl_Online(&phone_control,
+                                                 (uint32_t)now, control_timeout);
+        if (!phone_control.latest.show_sensor &&
+            phone_is_online != phone_was_online)
+            dirty = 1;
+        phone_was_online = phone_is_online;
         if (!online && (TickType_t)(now - last_retry) >= pdMS_TO_TICKS(2000)) {
             last_retry = now;
             online = start_oled(); dirty = 1;
@@ -151,7 +163,12 @@ void app_main(void)
         }
         if (online && dirty && (TickType_t)(now - last_draw) >= pdMS_TO_TICKS(200)) {
             last_draw = now;
-            if (draw_screen() != ESP_OK) {
+            if (!phone_control.latest.show_sensor)
+                PhoneControl_Render(&phone_control, (uint32_t)now,
+                                    control_timeout, CONFIG_QUAD_AP_SSID, phone_screen);
+            char (*rows)[DISPLAY_COLS + 1] = phone_control.latest.show_sensor ?
+                sensor_screen : phone_screen;
+            if (draw_screen(rows) != ESP_OK) {
                 online = 0; last_retry = now;
                 ESP_LOGW(TAG, "OLED write failed");
             } else dirty = 0;

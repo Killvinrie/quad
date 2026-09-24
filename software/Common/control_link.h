@@ -5,8 +5,8 @@
 #include <stddef.h>
 #include <string.h>
 
-/* QCTRL v1 is used both as an nRF24 payload and as the ESP32-F411 UART frame.
- * It is deliberately smaller than the nRF24 maximum payload of 32 bytes. */
+/* QCTRL v1 is the ESP32-F411 UART frame. The retired nRF24 controller also
+ * used this format, so its 20-byte size remains unchanged. */
 #define CONTROL_MAGIC0 0x51U /* 'Q' */
 #define CONTROL_MAGIC1 0x43U /* 'C' */
 #define CONTROL_VERSION 1U

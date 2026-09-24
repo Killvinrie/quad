@@ -15,9 +15,11 @@ with tempfile.TemporaryDirectory(prefix="quad-check-") as tmp:
     host = str(Path(tmp) / "protocol")
     run(["cc", "-std=c99", "-Wall", "-Wextra", "-Werror", "-fsanitize=undefined",
          "-Isoftware/Common", "-Isoftware/Core/Inc",
+         "-Isoftware/esp32_oled/main",
          "test/sensors/test_protocol.c", "software/Core/Src/gps_nmea.c",
          "software/Core/Src/bmp388_math.c", "software/Core/Src/imu_calibration.c",
          "software/Core/Src/attitude_6dof.c",
+         "software/esp32_oled/main/phone_control.c",
          "-lm", "-o", host])
     run([host])
     if not shutil.which("arm-none-eabi-gcc"):

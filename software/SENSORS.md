@@ -14,7 +14,7 @@ STM32F411 采集 MPU6050、BMP388、GPS 和 ADC，经 USART2 发给 ESP32-S3，�
 | BMP388 | STM32 I2C2：PB10 SCL / PB3 SDA | U4，自动识别 0x76 / 0x77，校验 CHIP_ID=0x50 |
 | GPS | STM32 USART1：PA9 TX / PA10 RX | U7 RX / TX，默认 9600、8N1 |
 | OLED 数据发送 | STM32 USART2 PA2 TX | ESP32 GPIO18 RX，115200、8N1 |
-| OLED 数据链路回线 | STM32 USART2 PA3 RX | ESP32 GPIO17 TX，当前无需发送回包 |
+| 手机控制指令 | STM32 USART2 PA3 RX | ESP32 GPIO17 TX，115200、8N1 |
 | OLED | ESP32 GPIO5 SCL / GPIO6 SDA | U6，默认 SSD1306 128×64，自动识别 0x3C / 0x3D |
 | 电压采样 | STM32 PA1 / ADC1 channel 1 | 显示 ADC 原码及引脚电压 |
 
@@ -36,8 +36,9 @@ STM32 参数在 `Core/Inc/sensor_config.h`。ADC 默认参考电压为 3300mV，
 - MPU6050 的加速度、角速度和温度在校准后使用 1/4 新样本的一阶低通；ADC 原码使用 1/4 新样本的一阶低通后再按 10/43 分压比换算。
 - ADC 页面按用户确认的 10/43 分压比还原原始电压：`Vsource = VPA1 × 43 / 10`。`BAT` 显示还原后的电压，`ADC RAW` 仍显示12位原始码；这里假设 ADC 输入电压确实是原电压的 10/43。
 - 传感器通信失败立即清除有效标记，500ms 没有新采样也判为离线；每 2 秒尝试重新初始化。GPS 3 秒没有有效 GGA 显示超时，无定位 GGA 显示等待定位。
-- ESP32 通过 USART2 双工链路把 QCTRL v1 控制帧转发给 F411。F411 在 USART2 接收中断中校验 CRC，并由 `ControlApp_GetLatest()` 提供最近一帧；超过 250ms 未收到有效帧即视为失控。控制帧只完成接收和保存，当前固件还没有电机 PWM 与姿态混控。
-- ESP32 上电显示等待 STM32；有效显示帧中断超过 2 秒后清除旧数据并提示链路断开；OLED 掉线后每 2 秒重新探测。
+- ESP32 建立密码保护的 `QUAD-CONTROL` 热点。手机连接后访问 `http://192.168.4.1/`，在网页上控制偏航、油门、俯仰和横滚；默认密码见 [手机遥控说明](esp32_oled/README.md)。ESP32 将手机指令编码为 QCTRL v1，通过 GPIO17→F411 PA3 的 UART 发送。F411 在接收中断中校验 CRC，并由 `ControlApp_GetLatest()` 提供最新指令；超过 250ms 未收到有效帧即返回无效。当前 F411 尚未实现电机 PWM 与姿态混控，控制帧只被接收和保存。
+- OLED 默认显示手机热点与连接状态；网页可切换 OLED 到 F411 传感器页。手机发送控制时显示四路控制原码和帧序号；250ms 无指令则显示 `PHONE LINK LOST`，不显示旧控制量。F411 的 SW5 拨码仍负责选择传感器页内容。
+- ESP32 上电显示手机控制等待页；STM32 有效显示帧中断超过 2 秒时，传感器页清除旧数据并提示链路断开；OLED 掉线后每 2 秒重新探测。ESP32 不再使用 NRF24。
 
 这是传感器联调程序，主循环有短时间的阻塞 I²C、串口发送和初始化延时，尚不是飞控实时控制调度。代码没有启动电机 PWM 或姿态控制。
 
@@ -93,7 +94,7 @@ idf.py build
 idf.py -p /dev/ttyACM0 flash monitor
 ```
 
-串口设备路径按实物修改。`menuconfig → Quad sensor display` 可修改 OLED 引脚和 STM32 链路串口参数。该目录是独立固件；现有 `test/wifi_test` 的 Wi-Fi/OTA 实验程序没有合并到显示固件。
+串口设备路径按实物修改。`menuconfig → Quad phone controller` 可修改手机热点名称和密码；`Quad sensor display` 可修改 OLED 引脚和 STM32 链路串口参数。完整使用方法见 [手机遥控说明](esp32_oled/README.md)。该目录是独立固件；现有 `test/wifi_test` 的 Wi-Fi/OTA 实验程序没有合并进来。
 
 CubeMX 当前只把 I²C/UART 引脚设为复用，没有生成这些外设的初始化，本实现统一由 `SensorApp_Init` 管理。不要再添加第二套重复初始化。重新生成 CubeMX 代码后，须检查：
 1. `stm32f4xx_hal_conf.h` 中 I²C/UART 模块依然启用。
@@ -111,10 +112,10 @@ python3 test/sensors/check_firmware.py
 
 脚本使用主机 C 编译器运行 CRC/截断/损坏帧恢复、GPS 校验及坐标范围、BMP388 补偿与系数符号测试；随后用 `arm-none-eabi-gcc` 编译 IAR 工程列出的全部 C 文件并检查链接符号。链接使用 nosys 桩，可能输出标准系统调用未实现的警告；产物仅做符号检查，不是可烧录固件。
 
-已通过协议与姿态算法测试、27 个 ARM C 文件检查，以及 GCC 完整固件构建；额外检查所有中断向量、初始栈地址、复位入口、GPS/SysTick 中断绑定、内存布局和未解析符号。GCC 构建生成的 ELF/HEX/BIN 可用于烧录。当前环境没有 ESP-IDF / IAR，尚未执行 ESP32 完整构建、IAR 完整构建或实物测试。
+已通过协议与姿态算法测试、27 个 ARM C 文件检查，以及 GCC 完整固件构建；额外检查所有中断向量、初始栈地址、复位入口、GPS/SysTick 中断绑定、内存布局和未解析符号。GCC 构建生成的 ELF/HEX/BIN 可用于烧录。当前电脑有 ESP-IDF 源码，但缺少其 Python 虚拟环境；尚未完成 ESP32 构建、IAR 构建或实物测试。
 
 上板验证：
-1. 上电后 OLED 显示 MPU 首页，将 SW5 设置为 `0000`、`0001`、`0010`、`0011` 分别选择四页；若一直等待 STM32，核对 PA2→GPIO18 和共地。
+1. 上电后 OLED 显示手机热点等待页；手机连接热点、打开 `http://192.168.4.1/`、按“开始控制”。网页将 OLED 切换为传感器页后，用 SW5 的 `0000`、`0001`、`0010`、`0011` 分别选择四页；若一直等待 STM32，核对 PA2→GPIO18 和共地。
 2. 拆下桨叶，水平静置上电，等待约 3 秒完成 IMU 校准；姿态页应接近 0°/0°/0°。抬起机头时 PITCH 应增大，左侧机臂抬起时 ROLL 应增大；从上方看向右转时 YAW 应增大。若方向相反，核对 MPU 安装方向与机头定义。
 3. 平放 MPU 时，加速度合量应接近 1G，静止角速度应接近零（存在零偏）；翻转或转动后数值应变化。
 4. BMP 应显示所在地合理气压和芯片温度；GPS 在室外获得定位后显示有效坐标。

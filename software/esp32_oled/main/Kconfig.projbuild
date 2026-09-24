@@ -20,25 +20,11 @@ menu "Quad sensor display"
         default 115200
 endmenu
 
-menu "Quad control NRF24 receiver"
-    config QUAD_NRF_SCK
-        int "NRF24 SCK GPIO"
-        default 12
-        range 0 48
-    config QUAD_NRF_MOSI
-        int "NRF24 MOSI GPIO"
-        default 11
-        range 0 48
-    config QUAD_NRF_MISO
-        int "NRF24 MISO GPIO"
-        default 13
-        range 0 48
-    config QUAD_NRF_CSN
-        int "NRF24 CSN GPIO"
-        default 7
-        range 0 48
-    config QUAD_NRF_CE
-        int "NRF24 CE GPIO"
-        default 4
-        range 0 48
+menu "Quad phone controller"
+    config QUAD_AP_SSID
+        string "Controller Wi-Fi name"
+        default "QUAD-CONTROL"
+    config QUAD_AP_PASSWORD
+        string "Controller Wi-Fi password (8-63 characters)"
+        default "quad-phone-2026"
 endmenu

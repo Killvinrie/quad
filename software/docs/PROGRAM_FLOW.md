@@ -535,22 +535,20 @@ pixels[1 + 字符序号×6 + 字模列号] = glyph(字符, 字模列号)
 
 加上每次交易的地址字节及 ACK，100kHz下纯位传输时间约 `(1064+16)×9/100000 = 97.2ms`，未计 START/STOP、驱动调度与异常等待。屏幕按页依次改写，没有双缓冲或垂直同步，逻辑上的整帧接收不等于屏幕硬件一次性刷新。当前没有差分刷新，dirty是“有新帧/新状态待画”，不是“字符内容确实不同”。
 
-## 13. 遥控器控制链与 F411 接收
+## 13. 手机 Wi-Fi 控制链与 F411 接收
 
 ```mermaid
 flowchart LR
-    A["F103 PA0..PA3<br/>四路摇杆 ADC"] --> B["ControllerApp_Poll<br/>20 ms 采样"]
-    K["F103 八个按键<br/>低电平按下"] --> B
-    B --> C["control_encode<br/>QCTRL v1 / CRC16"]
-    C --> D["NRF24L01<br/>1 Mbps / CH76 / QDRC1"]
-    D --> E["ESP32-S3 NRF24 接收"]
-    E --> F["UART1<br/>ESP GPIO17 TX → F411 PA3 RX"]
+    A["手机浏览器<br/>双虚拟摇杆"] --> B["ESP32 SoftAP<br/>QUAD-CONTROL / 192.168.4.1"]
+    B --> C["HTTP POST /api/control<br/>约50ms一次，严格校验0..4095"]
+    C --> D["control_encode<br/>QCTRL v1 / CRC16"]
+    D --> F["UART1<br/>ESP GPIO17 TX → F411 PA3 RX"]
     F --> G["USART2 RX 中断<br/>SensorApp_LinkIRQ"]
     G --> H["ControlApp_RxByte<br/>滑动同步 + CRC 校验"]
-    H --> I["ControlApp_GetLatest<br/>最新轴量/按键/250 ms 超时"]
+    H --> I["ControlApp_GetLatest<br/>最新轴量/250 ms 超时"]
 ```
 
-QCTRL v1 固定 20 字节：`51 43 01` 帧头、序号、YAW/THR/PITCH/ROLL 四个小端 16 位 ADC 值、8 个按键位、flags、电池电压字段、保留字节和 CRC16-CCITT。ESP32 将有效 NRF24 载荷原样写入 F411 USART2；F411 不在中断中执行电机控制，只更新最新命令快照。飞控主循环必须检查 `ControlApp_GetLatest()` 的返回值，超过 250ms 无帧时进入失控保护。
+QCTRL v1 固定 20 字节：`51 43 01` 帧头、序号、YAW/THR/PITCH/ROLL 四个小端 16 位值、按键位、flags、电池电压字段、保留字节和 CRC16-CCITT。手机网页只传四轴原码及 OLED 页面选择；ESP32 填写序号、CRC，按键/flags/电池字段目前为 0。HTTP 接收任务收到完整合法请求后立即经 UART 发给 F411，OLED 主循环只读取最新状态，避免屏幕刷新阻塞控制发送。网页停止发送时 ESP32 也不再发送 UART 控制帧；F411 不在中断中执行电机控制，只更新最新命令快照。将来接入电机控制时必须检查 `ControlApp_GetLatest()` 的返回值，超过 250ms 无帧时进入失控保护。
 
 ## 14. 异常与恢复汇总
 
@@ -568,6 +566,7 @@ QCTRL v1 固定 20 字节：`51 43 01` 帧头、序号、YAW/THR/PITCH/ROLL 四�
 | STM32显示串口发送失败 | 不检查返回值，不立即重传 | 下周期发最新完整帧，ESP接收器重新同步 |
 | 显示帧错位或CRC错误 | 不改screen、不更新last_rx | 滑动查找下一合法帧 |
 | ESP收到数据后断流超过2秒 | 清旧屏幕文字，显示链路断开 | 新合法帧自动恢复 |
+| 手机 HTTP 指令超过250ms未更新 | 手机 OLED 页显示链路断开，ESP不产生新控制帧 | 网页恢复发送后更新；F411 自行按250ms超时判断 |
 | OLED无应答或写失败 | online=0 | 每2秒探测并完整初始化 |
 
 错误检测的时间点受主循环阻塞影响，上表时间都是程序判断阈值，而非严格的最长故障响应时间。
@@ -584,9 +583,10 @@ QCTRL v1 固定 20 字节：`51 43 01` 帧头、序号、YAW/THR/PITCH/ROLL 四�
 | GPS句子校验 | [Core/Src/gps_nmea.c](../Core/Src/gps_nmea.c)：Gps_ParseGga |
 | GPS与SysTick中断入口 | [Core/Src/stm32f4xx_it.c](../Core/Src/stm32f4xx_it.c) |
 | 两端共用显示协议 | [Common/display_link.h](../Common/display_link.h)：display_encode / display_feed / display_crc |
-| 遥控器控制协议 | [Common/control_link.h](../Common/control_link.h)：control_encode / control_feed / control_decode |
+| 手机控制协议 | [Common/control_link.h](../Common/control_link.h)：control_encode / control_feed / control_decode |
 | F411 控制帧接收 | [Core/Src/control_app.c](../Core/Src/control_app.c)：ControlApp_RxByte / ControlApp_GetLatest |
 | ESP32接收和OLED | [esp32_oled/main/oled_main.c](../esp32_oled/main/oled_main.c)：app_main / start_oled / draw_screen / glyph |
+| ESP32热点/网页 | [esp32_oled/main/phone_server.c](../esp32_oled/main/phone_server.c)、[esp32_oled/main/phone_control.html](../esp32_oled/main/phone_control.html) |
 | STM32配置常量 | [Core/Inc/sensor_config.h](../Core/Inc/sensor_config.h) |
 | ESP32默认参数 | [esp32_oled/main/Kconfig.projbuild](../esp32_oled/main/Kconfig.projbuild)，实际构建以sdkconfig为准 |
 
