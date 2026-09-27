@@ -14,10 +14,12 @@
   .status { padding: 12px; border-radius: 10px; background: #253047; margin: 12px 0; }
   .status[data-active="yes"] { background: #164d42; }
   .actions { display: flex; gap: 10px; margin: 12px 0 22px; }
+  .tests { display: flex; gap: 8px; margin: 12px 0; }
   button { flex: 1; min-height: 48px; border: 0; border-radius: 10px; font: inherit;
            font-weight: 650; color: white; background: #286bd3; }
   button.stop { background: #b83a42; }
   button.secondary { background: #34435e; }
+  button.test { touch-action: none; user-select: none; }
   .sticks { display: flex; justify-content: space-around; gap: 12px; }
   .unit { flex: 1; text-align: center; }
   .unit h2 { font-size: 1rem; margin: 0 0 9px; }
@@ -42,17 +44,19 @@
   <div class="status" id="status">未开始；油门为 0</div>
   <div class="actions"><button id="start">开始控制</button><button class="stop" id="arm">请求解锁</button></div>
   <div class="actions"><button class="secondary" id="view">OLED：遥控数据</button></div>
+  <p>拆桨后，保持未解锁、油门为 0、摇杆回中，按住下方按钮逐路识别电机：</p>
+  <div class="tests"><button class="secondary test" data-channel="1">CH1</button><button class="secondary test" data-channel="2">CH2</button><button class="secondary test" data-channel="3">CH3</button><button class="secondary test" data-channel="4">CH4</button></div>
   <div class="sticks">
     <div class="unit"><h2>左杆：偏航 / 油门</h2><div class="pad" id="left"><div class="knob"></div></div>
       <div class="values" id="leftValues">偏航 2048<br>油门 0</div></div>
     <div class="unit"><h2>右杆：横滚 / 俯仰</h2><div class="pad" id="right"><div class="knob"></div></div>
       <div class="values" id="rightValues">横滚 2048<br>俯仰 2048</div></div>
   </div>
-  <p class="note">先拆下全部螺旋桨。开始控制后，保持油门为 0、其他轴回中，再点“请求解锁”。再次点击可停机。松开左杆油门归零；停止控制或切到后台会发送停机请求，F411 还会按 250 ms 链路超时停机。网页按钮只是请求，实际状态以飞控为准。</p>
+  <p class="note">先拆下全部螺旋桨。开始控制后，保持油门为 0、其他轴回中，再点“请求解锁”。左杆上下线性调节油门，松手保持当前位置，偏航回中；停机或停止控制会把油门归零。切到后台会发送停机请求，F411 还会按 250 ms 链路超时停机。网页按钮只是请求，实际状态以飞控为准。</p>
 </main>
 <script>
 (() => {
-  const axis = { yaw: 2048, thr: 0, pitch: 2048, roll: 2048, view: 0, arm: 0 };
+  const axis = { yaw: 2048, thr: 0, pitch: 2048, roll: 2048, view: 0, arm: 0, test: 0 };
   const status = document.getElementById('status');
   const startButton = document.getElementById('start');
   const armButton = document.getElementById('arm');
@@ -75,36 +79,64 @@
     else { axis.roll = 2048; axis.pitch = 2048; knob(side, 0, 0); }
     labels();
   }
+  function release(side) {
+    if (side === 'left') {
+      axis.yaw = 2048;
+      knob(side, 0, 1 - 2 * axis.thr / 4095);
+      labels();
+    } else center(side);
+  }
   function move(side, event) {
     if (!active) return;
     const rect = pads[side].getBoundingClientRect();
     const radius = rect.width / 2;
-    let x = (event.clientX - rect.left - radius) / radius;
-    let y = (event.clientY - rect.top - radius) / radius;
+    let x = clamp((event.clientX - rect.left - radius) / radius, -1, 1);
+    let y = clamp((event.clientY - rect.top - radius) / radius, -1, 1);
+    if (side === 'left') {
+      /* Throttle depends only on vertical position, even during yaw input. */
+      axis.thr = raw(-y);
+      axis.yaw = raw(x);
+    }
     const length = Math.hypot(x, y);
     if (length > 1) { x /= length; y /= length; }
     knob(side, x, y);
-    if (side === 'left') { axis.yaw = raw(x); axis.thr = raw(-y); }
-    else { axis.roll = raw(x); axis.pitch = raw(-y); }
+    if (side === 'right') { axis.roll = raw(x); axis.pitch = raw(-y); }
     labels();
   }
   for (const side of ['left', 'right']) {
     const pad = pads[side];
+    let releasedNormally = false;
     pad.addEventListener('pointerdown', event => {
       if (!active) return;
+      releasedNormally = false;
       pad.setPointerCapture(event.pointerId);
       move(side, event);
     });
     pad.addEventListener('pointermove', event => {
       if (pad.hasPointerCapture(event.pointerId)) move(side, event);
     });
-    for (const type of ['pointerup', 'pointercancel', 'lostpointercapture'])
-      pad.addEventListener(type, () => center(side));
+    pad.addEventListener('pointerup', () => {
+      releasedNormally = true;
+      release(side);
+      transmit(true);
+    });
+    pad.addEventListener('pointercancel', () => {
+      releasedNormally = true;
+      if (side === 'left') stop();
+      else { center(side); transmit(true); }
+    });
+    pad.addEventListener('lostpointercapture', () => {
+      if (!releasedNormally && active) {
+        if (side === 'left') stop();
+        else { center(side); transmit(true); }
+      }
+      releasedNormally = false;
+    });
   }
   async function transmit(keepalive = false) {
     if (pending) { if (keepalive) sendQueued = true; return; }
     pending = true;
-    const body = [axis.yaw, axis.thr, axis.pitch, axis.roll, axis.view, axis.arm].join(',');
+    const body = [axis.yaw, axis.thr, axis.pitch, axis.roll, axis.view, axis.arm, axis.test].join(',');
     try {
       const response = await fetch('/api/control', {
         method: 'POST', headers: {'Content-Type': 'text/plain', 'X-Quad-Control': '1'},
@@ -123,6 +155,7 @@
     active = false;
     clearInterval(timer); timer = null;
     axis.arm = 0;
+    axis.test = 0;
     armButton.textContent = '请求解锁';
     center('left'); center('right');
     startButton.textContent = '开始控制';
@@ -145,10 +178,12 @@
     if (!active) { status.textContent = '请先开始控制'; return; }
     if (axis.arm) {
       axis.arm = 0;
+      center('left');
+      center('right');
       armButton.textContent = '请求解锁';
       status.textContent = '已发送停机请求';
     } else {
-      if (axis.thr > 40 || Math.abs(axis.yaw - 2048) > 160 ||
+      if (axis.test || axis.thr > 40 || Math.abs(axis.yaw - 2048) > 160 ||
           Math.abs(axis.pitch - 2048) > 160 || Math.abs(axis.roll - 2048) > 160) {
         status.textContent = '油门归零，其他轴回中后才能请求解锁';
         return;
@@ -159,6 +194,30 @@
     }
     transmit(true);
   });
+  for (const button of document.querySelectorAll('.test')) {
+    button.addEventListener('pointerdown', event => {
+      if (!active || axis.arm || axis.thr !== 0 ||
+          Math.abs(axis.yaw - 2048) > 160 ||
+          Math.abs(axis.pitch - 2048) > 160 ||
+          Math.abs(axis.roll - 2048) > 160) {
+        status.textContent = '逐路测试需先控制连接、停机、油门归零并回中';
+        return;
+      }
+      button.setPointerCapture(event.pointerId);
+      axis.test = Number(button.dataset.channel);
+      status.textContent = `正在测试物理 PWM CH${axis.test}，松手即停`;
+      transmit(true);
+    });
+    const endTest = () => {
+      if (axis.test === Number(button.dataset.channel)) {
+        axis.test = 0;
+        status.textContent = '逐路测试已停止';
+        transmit(true);
+      }
+    };
+    for (const type of ['pointerup', 'pointercancel', 'lostpointercapture'])
+      button.addEventListener(type, endTest);
+  }
   viewButton.addEventListener('click', () => {
     axis.view ^= 1;
     viewButton.textContent = axis.view ? 'OLED：传感器数据' : 'OLED：遥控数据';

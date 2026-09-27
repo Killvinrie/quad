@@ -10,6 +10,7 @@
 #include "attitude_6dof.h"
 #include "phone_control.h"
 #include "motor_logic.h"
+#include "stabilizer.h"
 
 static void sentence(char *out, const char *body)
 {
@@ -202,14 +203,16 @@ static void test_phone_control(void)
     ControlCommand decoded = {0};
     uint8_t frame[CONTROL_FRAME_SIZE];
     char rows[DISPLAY_ROWS][DISPLAY_COLS + 1];
-    const char *body = "1234,4095,2048,55,0,1";
+    const char *body = "1234,4095,2048,55,0,1,0";
     assert(PhoneControl_Parse(body, strlen(body), &input));
     assert(input.axis[0] == 1234 && input.axis[1] == 4095);
-    assert(!PhoneControl_Parse("-1,0,0,0,0,0", strlen("-1,0,0,0,0,0"), &input));
-    assert(!PhoneControl_Parse("4096,0,0,0,0,0", strlen("4096,0,0,0,0,0"), &input));
-    assert(!PhoneControl_Parse("1,2,3,4,2,0", strlen("1,2,3,4,2,0"), &input));
-    assert(!PhoneControl_Parse("1,2,3,4,0,2", strlen("1,2,3,4,0,2"), &input));
-    assert(!PhoneControl_Parse("1,2,3,4,0", strlen("1,2,3,4,0"), &input));
+    assert(!PhoneControl_Parse("-1,0,0,0,0,0,0", strlen("-1,0,0,0,0,0,0"), &input));
+    assert(!PhoneControl_Parse("4096,0,0,0,0,0,0", strlen("4096,0,0,0,0,0,0"), &input));
+    assert(!PhoneControl_Parse("1,2,3,4,2,0,0", strlen("1,2,3,4,2,0,0"), &input));
+    assert(!PhoneControl_Parse("1,2,3,4,0,2,0", strlen("1,2,3,4,0,2,0"), &input));
+    assert(!PhoneControl_Parse("1,2,3,4,0,1,1", strlen("1,2,3,4,0,1,1"), &input));
+    assert(!PhoneControl_Parse("1,2,3,4,0,0,5", strlen("1,2,3,4,0,0,5"), &input));
+    assert(!PhoneControl_Parse("1,2,3,4,0,1", strlen("1,2,3,4,0,1"), &input));
     PhoneControl_Apply(&state, &input, 100);
     assert(PhoneControl_Online(&state, 350, 250));
     PhoneControl_Encode(&state, frame);
@@ -217,6 +220,14 @@ static void test_phone_control(void)
     assert(decoded.axis[0] == 1234 && decoded.axis[1] == 4095);
     assert(decoded.axis[2] == 2048 && decoded.axis[3] == 55);
     assert(decoded.buttons == 0 && decoded.flags == CONTROL_FLAG_ARM);
+    const char *test_body = "2048,0,2048,2048,0,0,3";
+    assert(PhoneControl_Parse(test_body, strlen(test_body), &input));
+    PhoneControl_Apply(&state, &input, 101);
+    PhoneControl_Encode(&state, frame);
+    assert(control_decode(frame, &decoded));
+    assert(decoded.buttons == 3 && decoded.flags == CONTROL_FLAG_MOTOR_TEST);
+    assert(PhoneControl_Parse(body, strlen(body), &input));
+    PhoneControl_Apply(&state, &input, 100);
     PhoneControl_Render(&state, 120, 250, "QUAD-CONTROL", rows);
     assert(strstr(rows[1], "1234") && strstr(rows[2], "4095"));
     assert(!PhoneControl_Online(&state, 351, 250));
@@ -261,11 +272,49 @@ static void test_motor_logic(void)
     assert(MotorLogic_Update(&state, &command, 1) == MOTOR_MIN_US && state.armed);
     command.flags = 0;
     assert(MotorLogic_Update(&state, &command, 1) == MOTOR_MIN_US && !state.armed);
+    command.flags = CONTROL_FLAG_MOTOR_TEST;
+    command.buttons = 3;
+    assert(MotorLogic_TestChannel(&state, &command, 1) == 3);
+    command.axis[1] = 1;
+    assert(MotorLogic_TestChannel(&state, &command, 1) == 0);
+    command.axis[1] = 0;
+    assert(MotorLogic_TestChannel(&state, &command, 0) == 0);
+}
+static void test_stabilizer(void)
+{
+    Stabilizer state;
+    ControlCommand command = {0};
+    SensorAttitude sample = {0};
+    uint16_t motor[4];
+    command.axis[0] = command.axis[2] = command.axis[3] = 2048;
+    command.axis[1] = 2048;
+    Stabilizer_Reset(&state);
+    assert(Stabilizer_Step(&state, &command, &sample, 0.02f, motor));
+    assert(motor[0] == motor[1] && motor[1] == motor[2] &&
+           motor[2] == motor[3]);
+    sample.roll_deg = 10.0f; /* Left side high: right motors must increase. */
+    Stabilizer_Reset(&state);
+    assert(Stabilizer_Step(&state, &command, &sample, 0.02f, motor));
+    assert(motor[0] < motor[1] && motor[3] < motor[2]);
+    sample.roll_deg = 0;
+    sample.pitch_deg = 10.0f; /* Nose high: rear motors must increase. */
+    Stabilizer_Reset(&state);
+    assert(Stabilizer_Step(&state, &command, &sample, 0.02f, motor));
+    assert(motor[0] < motor[3] && motor[1] < motor[2]);
+    sample.pitch_deg = 0;
+    command.axis[2] = 4095; /* Stick forward requests nose down. */
+    Stabilizer_Reset(&state);
+    assert(Stabilizer_Step(&state, &command, &sample, 0.02f, motor));
+    assert(motor[0] < motor[3] && motor[1] < motor[2]);
+    sample.pitch_deg = 40.0f;
+    assert(Stabilizer_Step(&state, &command, &sample, 0.02f, motor));
+    sample.pitch_deg = NAN;
+    assert(!Stabilizer_Step(&state, &command, &sample, 0.02f, motor));
 }
 int main(void)
 {
     test_gps(); test_frames(); test_bmp(); test_control(); test_imu_calibration();
-    test_attitude(); test_phone_control(); test_motor_logic();
-    puts("PASS: GPS, CRC, BMP388, IMU, phone control, motor interlock");
+    test_attitude(); test_phone_control(); test_motor_logic(); test_stabilizer();
+    puts("PASS: GPS, CRC, BMP388, IMU, phone control, motor mapping/PID");
     return 0;
 }

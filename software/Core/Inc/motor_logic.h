@@ -9,6 +9,7 @@
 #define MOTOR_MAX_US 1940U
 #define MOTOR_ARM_THROTTLE_MAX 40U
 #define MOTOR_CENTER_TOLERANCE 160U
+#define MOTOR_TEST_US 1250U
 
 typedef struct {
     uint8_t armed;
@@ -20,5 +21,7 @@ void MotorLogic_Init(MotorLogic *state);
 void MotorLogic_ForceDisarm(MotorLogic *state);
 uint16_t MotorLogic_Update(MotorLogic *state, const ControlCommand *command,
                            int link_valid);
+unsigned MotorLogic_TestChannel(const MotorLogic *state,
+                                const ControlCommand *command, int link_valid);
 
 #endif

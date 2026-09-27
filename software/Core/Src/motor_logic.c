@@ -44,3 +44,21 @@ uint16_t MotorLogic_Update(MotorLogic *state, const ControlCommand *command,
                       ((uint32_t)throttle * (MOTOR_MAX_US - MOTOR_MIN_US) +
                        2047U) / 4095U);
 }
+
+unsigned MotorLogic_TestChannel(const MotorLogic *state,
+                                const ControlCommand *command, int link_valid)
+{
+    if (!link_valid || !command || state->armed ||
+        (command->flags & (CONTROL_FLAG_ARM | CONTROL_FLAG_MOTOR_TEST)) !=
+            CONTROL_FLAG_MOTOR_TEST ||
+        command->buttons < 1U || command->buttons > 4U ||
+        command->axis[1] != 0U ||
+        command->axis[0] < 2048U - MOTOR_CENTER_TOLERANCE ||
+        command->axis[0] > 2048U + MOTOR_CENTER_TOLERANCE ||
+        command->axis[2] < 2048U - MOTOR_CENTER_TOLERANCE ||
+        command->axis[2] > 2048U + MOTOR_CENTER_TOLERANCE ||
+        command->axis[3] < 2048U - MOTOR_CENTER_TOLERANCE ||
+        command->axis[3] > 2048U + MOTOR_CENTER_TOLERANCE)
+        return 0;
+    return command->buttons;
+}

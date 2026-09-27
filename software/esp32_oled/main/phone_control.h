@@ -10,6 +10,7 @@ typedef struct {
     uint16_t axis[CONTROL_AXIS_COUNT]; /* yaw, throttle, pitch, roll */
     uint8_t show_sensor;
     uint8_t arm;
+    uint8_t test_channel; /* 0=off, 1..4=physical TIM3 channel. */
     uint8_t sequence; /* Set by ESP32 after UART frame encoding. */
 } PhoneInput;
 
@@ -20,7 +21,7 @@ typedef struct {
     uint8_t sequence;
 } PhoneControl;
 
-/* Six comma-separated fields: yaw,thr,pitch,roll,view,arm.
+/* Seven comma-separated fields: yaw,thr,pitch,roll,view,arm,test.
  * view=0 shows phone values; view=1 shows STM32 sensor pages. */
 int PhoneControl_Parse(const char *data, size_t length, PhoneInput *out);
 void PhoneControl_Apply(PhoneControl *state, const PhoneInput *input,

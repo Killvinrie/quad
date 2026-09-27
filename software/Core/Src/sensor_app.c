@@ -4,6 +4,7 @@
 #include "gps_nmea.h"
 #include "bmp388_math.h"
 #include "control_app.h"
+#include "motor_app.h"
 #include "imu_calibration.h"
 #include "attitude_6dof.h"
 #include "../../Common/display_link.h"
@@ -27,6 +28,7 @@ static uint8_t adc_filter_initialized, imu_filter_initialized;
 static ImuCalibration imu_calibration;
 static Attitude6Dof attitude;
 static uint32_t attitude_tick;
+static float body_rate_dps[3];
 static BmpCalibration calibration;
 static GpsFix gps;
 static uint8_t gps_seen;
@@ -78,8 +80,9 @@ static void poll_page_switches(uint32_t now)
     if (stable_code == raw_code || (uint32_t)(now - changed_at) < PAGE_SELECT_STABLE_MS)
         return;
     stable_code = raw_code;
-    /* 0000=MPU, 0001=BMP/ADC, 0010=GPS, 0011=attitude. */
-    if (stable_code <= 3U) display_page = stable_code;
+    /* 0000=MPU, 0001=BMP/ADC, 0010=GPS, 0011=attitude,
+     * 0100=motor PWM. */
+    if (stable_code <= 4U) display_page = stable_code;
 }
 
 static int read_reg(I2C_HandleTypeDef *bus, uint16_t addr, uint8_t reg,
@@ -185,6 +188,11 @@ static void sample_sensors(void)
                     int32_t body_gyro[3] = {-gyro_sample[0],
                                             -z_up * gyro_sample[1],
                                              z_up * gyro_sample[2]};
+                    /* Match the displayed attitude signs: pitch and yaw are
+                     * negated relative to positive body Y/Z gyro rotation. */
+                    body_rate_dps[0] = (float)body_gyro[0] * 0.01f;
+                    body_rate_dps[1] = -(float)body_gyro[1] * 0.01f;
+                    body_rate_dps[2] = -(float)body_gyro[2] * 0.01f;
                     uint32_t attitude_now = HAL_GetTick();
                     if (!attitude.ready || !attitude_tick ||
                         (uint32_t)(attitude_now - attitude_tick) > 100U) {
@@ -326,10 +334,10 @@ static void send_screen(uint32_t now)
     uint8_t frame[DISPLAY_FRAME_SIZE];
     unsigned page = display_page;
     if (page == 0) {
-        strcpy(rows[0], "1/4 MPU6050");
+        strcpy(rows[0], "1/5 MPU6050");
         if (imu_valid) {
             if (ImuCalibration_LargeGyroBias(&imu_calibration))
-                strcpy(rows[0], "1/4 MPU BIAS HIGH");
+                strcpy(rows[0], "1/5 MPU BIAS HIGH");
             for (unsigned i = 0; i < 3; ++i) {
                 const char *al[] = {"AX:", "AY:", "AZ:"};
                 const char *gl[] = {"GX:", "GY:", "GZ:"};
@@ -347,7 +355,7 @@ static void send_screen(uint32_t now)
             strcpy(rows[4], "CHECK I2C1 PB6/PB7");
         }
     } else if (page == 1) {
-        strcpy(rows[0], "2/4 BMP388 / ADC");
+        strcpy(rows[0], "2/5 BMP388 / ADC");
         if (baro_valid) {
             fixed(rows[2], sizeof(rows[0]), "P:", pressure, 100, 2, "HPA");
             fixed(rows[3], sizeof(rows[0]), "T:", baro_temp, 100, 2, "C");
@@ -359,7 +367,7 @@ static void send_screen(uint32_t now)
         } else strcpy(rows[5], "ADC ERROR");
         strcpy(rows[7], "DIV:10/43 ADC");
     } else if (page == 2) {
-        strcpy(rows[0], "3/4 GPS NMEA GGA");
+        strcpy(rows[0], "3/5 GPS NMEA GGA");
         if (!gps_seen || (uint32_t)(now - gps_tick) > 3000) {
             strcpy(rows[2], "NO GGA / TIMEOUT");
             snprintf(rows[4], sizeof(rows[0]), "BAUD:%lu", (unsigned long)SENSOR_GPS_BAUD);
@@ -372,8 +380,8 @@ static void send_screen(uint32_t now)
                 snprintf(rows[5], sizeof(rows[0]), "%s %c", gps.longitude, gps.ew);
             } else strcpy(rows[3], "WAITING FOR FIX");
         }
-    } else {
-        strcpy(rows[0], "4/4 ATTITUDE");
+    } else if (page == 3) {
+        strcpy(rows[0], "4/5 ATTITUDE");
         if (imu_valid && attitude.ready) {
             float angles_deg[3] = {attitude.roll_deg, attitude.pitch_deg,
                                    attitude.yaw_deg};
@@ -391,6 +399,17 @@ static void send_screen(uint32_t now)
         } else {
             strcpy(rows[2], "MPU6050 OFFLINE");
         }
+    } else {
+        MotorAppStatus motor;
+        MotorApp_GetStatus(&motor);
+        strcpy(rows[0], "5/5 MOTOR PWM (US)");
+        strcpy(rows[1], motor.stabilizing ? "PID ACTIVE" :
+                        motor.armed ? "ARMED / PID IDLE" : "DISARMED");
+        snprintf(rows[2], sizeof(rows[0]), "FR M1 CH1:%4u", motor.pwm_us[0]);
+        snprintf(rows[3], sizeof(rows[0]), "FL M2 CH2:%4u", motor.pwm_us[1]);
+        snprintf(rows[4], sizeof(rows[0]), "RR M3 CH3:%4u", motor.pwm_us[2]);
+        snprintf(rows[5], sizeof(rows[0]), "RL M4 CH4:%4u", motor.pwm_us[3]);
+        strcpy(rows[7], "REMOVE PROPS TO TEST");
     }
     display_encode(frame, rows);
     /* A failed frame is discarded; next refresh sends a complete CRC frame. */
@@ -464,4 +483,17 @@ void SensorApp_Poll(void)
         send_screen(now);
     }
     HAL_Delay(1);
+}
+
+int SensorApp_GetAttitude(SensorAttitude *out, uint32_t now)
+{
+    if (!out || !imu_valid || !attitude.ready || !attitude_tick ||
+        (uint32_t)(now - attitude_tick) > 100U) return 0;
+    out->roll_deg = attitude.roll_deg;
+    out->pitch_deg = attitude.pitch_deg;
+    out->roll_rate_dps = body_rate_dps[0];
+    out->pitch_rate_dps = body_rate_dps[1];
+    out->yaw_rate_dps = body_rate_dps[2];
+    out->tick_ms = attitude_tick;
+    return 1;
 }

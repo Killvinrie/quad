@@ -2,7 +2,7 @@
 
 本文件对应当前拨码切页版本，覆盖 `software/Core` 的 STM32 固件、`software/Common/display_link.h` 共用协议，以及 `software/esp32_oled` 的 ESP32 显示固件。图使用 Mermaid，在支持 Mermaid 的 Markdown 阅读器中可直接显示。寄存器值、公式和分支均按本仓库实现整理。
 
-`test/wifi_test`、`test/hello_world` 是独立实验工程，不参与当前固件运行。当前程序有六轴姿态解算、手机 Wi-Fi 控制链和四路同油门电调输出；没有姿态混控或 OTA 运行链路。
+`test/wifi_test`、`test/hello_world` 是独立实验工程，不参与当前固件运行。当前程序有六轴姿态解算、手机 Wi-Fi 控制链和四路同油门电调输出；X 型姿态 PID/混控代码在完成物理输出映射前默认关闭，没有 OTA 运行链路。
 
 ## 1. 整体数据流与接线
 
@@ -366,14 +366,14 @@ flowchart TD
     D --> E
     E -- 否 --> Z["本键无事件"]
     E -- 是 --> F["stable_code = raw_code"]
-    F --> G{"编码是0、1、2、3？"}
+    F --> G{"编码是0、1、2、3、4？"}
     G -- 否 --> Z["保持当前页面"]
-    G -- 是 --> H["page=编码：MPU/BMP/GPS/姿态"]
+    G -- 是 --> H["page=编码：MPU/BMP/GPS/姿态/电机PWM"]
 ```
 
-SWITCH1=PA6、SWITCH2=PA7、SWITCH3=PA8、SWITCH4=PB9，软件启用内部上拉，开关接通为低电平。四位编码为 `code = SW1 + 2×SW2 + 4×SW3 + 8×SW4`。`0000`、`0001`、`0010`、`0011` 分别选择 MPU、BMP/ADC、GPS、姿态；其他编码保持上一页。拨码编码连续稳定30ms后生效，不存在长按连翻逻辑。
+SWITCH1=PA6、SWITCH2=PA7、SWITCH3=PA8、SWITCH4=PB9，软件启用内部上拉，开关接通为低电平。四位编码为 `code = SW1 + 2×SW2 + 4×SW3 + 8×SW4`。`0000`、`0001`、`0010`、`0011`、`0100` 分别选择 MPU、BMP/ADC、GPS、姿态、电机 PWM；其他编码保持上一页。拨码编码连续稳定30ms后生效，不存在长按连翻逻辑。
 
-页面顺序：0=MPU6050，1=BMP388/ADC，2=GPS，3=姿态。页面变化不影响所有传感器的持续轮询和 GPS 接收。
+页面顺序：0=MPU6050，1=BMP388/ADC，2=GPS，3=姿态，4=电机 PWM。页面变化不影响所有传感器的持续轮询和 GPS 接收。
 
 ## 10. 显示数据组织与串口帧
 
@@ -390,17 +390,19 @@ flowchart LR
 
 | 页面 | 行号（从0开始） | 内容 |
 | --- | --- | --- |
-| MPU | 0 | `1/4 MPU6050` |
+| MPU | 0 | `1/5 MPU6050` |
 | MPU | 1–3 | AX、AY、AZ，单位 G，3位小数 |
 | MPU | 4–6 | GX、GY、GZ，单位 D/S，2位小数 |
 | MPU | 7 | 温度，单位 C，2位小数 |
-| BMP/ADC | 0 | `2/4 BMP388 / ADC` |
+| BMP/ADC | 0 | `2/5 BMP388 / ADC` |
 | BMP/ADC | 2、3 | 压力 HPA、温度 C |
 | BMP/ADC | 4、5、6、7 | 相对高度 H、ADC RAW、还原后的原电压 BAT、`DIV:10/43 ADC` |
 | GPS | 0、1 | 页标题、FIX质量与SAT卫星数 |
 | GPS | 2–5 | 经纬度格式标题、原始度分字符串和方向 |
-| 姿态 | 0、2–4 | `4/4 ATTITUDE`、ROLL/PITCH/YAW，单位 DEG，2位小数 |
+| 姿态 | 0、2–4 | `4/5 ATTITUDE`、ROLL/PITCH/YAW，单位 DEG，2位小数 |
 | 姿态 | 6–7 | 安装方向提示、航向为相对值提示 |
+| 电机 PWM | 0–5 | `5/5 MOTOR PWM (US)`、实际解锁/PID 状态、FR/FL/RR/RL 的 CH1～CH4 脉宽 |
+| 电机 PWM | 7 | 拆桨测试提示 |
 
 每次先清零全部行数组，因此缺省行变成空白，错误页不会残留本次未写入的旧行。`fixed()` 用整数绝对值、商、余数及符号格式化，不需要浮点 printf。
 
@@ -546,11 +548,13 @@ flowchart LR
     F --> G["USART2 RX 中断<br/>SensorApp_LinkIRQ"]
     G --> H["ControlApp_RxByte<br/>滑动同步 + CRC 校验"]
     H --> I["ControlApp_GetLatest<br/>最新轴量/250 ms 超时"]
-    I --> J["MotorLogic<br/>解锁校验/同油门映射"]
-    J --> K["TIM3 CH1-4<br/>50Hz / PB4 PB5 PB0 PB1"]
+    I --> J["MotorLogic<br/>解锁校验/逐路测试"]
+    J -->|"配置映射后启用"| P["Stabilizer<br/>X 型角度P+角速度PID"]
+    P --> K["TIM3 CH1-4<br/>50Hz / PB4 PB5 PB0 PB1"]
+    J -->|"默认同油门/逐路测试"| K
 ```
 
-QCTRL v1 固定 20 字节：`51 43 01` 帧头、序号、YAW/THR/PITCH/ROLL 四个小端 16 位值、按键位、flags、电池电压字段、保留字节和 CRC16-CCITT。手机网页传四轴原码、OLED 页面与解锁请求；ESP32 将解锁请求放入 flags bit0，并填写序号与 CRC。HTTP 接收任务收到完整合法请求后立即经 UART 发给 F411，OLED 主循环只读取最新状态。网页停止发送时 ESP32 也不再发送 UART 控制帧；F411 中断只更新最新命令快照，主循环校验解锁条件并映射 1100–1940μs 同油门，TIM3 中断输出四路 50Hz。链路失效或主循环停滞超过 250ms 时回最低油门。当前无姿态混控，详见[电机说明](../MOTORS.md)。
+QCTRL v1 固定 20 字节：`51 43 01` 帧头、序号、YAW/THR/PITCH/ROLL 四个小端 16 位值、按键位、flags、电池电压字段、保留字节和 CRC16-CCITT。手机网页传四轴原码、OLED 页面、解锁请求及物理通道测试请求；ESP32 将解锁放入 flags bit0，逐路测试放入 bit1、buttons 存 1～4，并填写序号与 CRC。HTTP 任务收到合法请求后立即经 UART 发给 F411。F411 主循环校验解锁与测试条件；默认映射 1100–1940μs 同油门，单路测试时只有选中通道输出 1250μs。X 型角度 P/角速度 PID 和四电机混控已实现，但在确认 PWM 线映射前默认关闭。TIM3 中断输出四路 50Hz；链路失效或主循环停滞超过 250ms 时回最低油门。详见[电机说明](../MOTORS.md)。
 
 ## 14. 异常与恢复汇总
 

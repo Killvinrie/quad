@@ -2,18 +2,28 @@
 #include "control_app.h"
 #include "motor_app.h"
 #include "motor_logic.h"
+#include "motor_config.h"
+#include "sensor_app.h"
+#include "stabilizer.h"
 
 /* TIM3 is clocked at 100 MHz (APB1 timer x2). Prescaler 99 gives a 1 MHz
  * counter. CH1..CH4 are PB4, PB5, PB0, PB1 on this board. */
 static MotorLogic logic;
-static volatile uint16_t requested_us = MOTOR_MIN_US;
+static Stabilizer stabilizer;
+static volatile uint16_t requested_us[4] = {
+    MOTOR_MIN_US, MOTOR_MIN_US, MOTOR_MIN_US, MOTOR_MIN_US
+};
 static volatile uint32_t last_poll_ms;
 static volatile uint8_t poll_stalled;
+static uint32_t last_attitude_tick;
+static uint8_t stabilizing;
 
 void MotorApp_Init(void)
 {
     MotorLogic_Init(&logic);
-    requested_us = MOTOR_MIN_US;
+    Stabilizer_Reset(&stabilizer);
+    stabilizing = 0;
+    for (unsigned i = 0; i < 4; ++i) requested_us[i] = MOTOR_MIN_US;
     last_poll_ms = HAL_GetTick();
     __HAL_RCC_TIM3_CLK_ENABLE();
     TIM3->CR1 = 0;
@@ -48,9 +58,69 @@ void MotorApp_Poll(void)
         MotorLogic_ForceDisarm(&logic);
         poll_stalled = 0;
     }
-    requested_us = MotorLogic_Update(&logic, &command, valid);
+    uint16_t base = MotorLogic_Update(&logic, &command, valid);
+    uint16_t pulse[4] = {base, base, base, base};
+    if (!logic.armed) {
+        stabilizing = 0;
+        Stabilizer_Reset(&stabilizer);
+        last_attitude_tick = 0;
+        unsigned test_channel = MotorLogic_TestChannel(&logic, &command, valid);
+        if (test_channel) pulse[test_channel - 1U] = MOTOR_TEST_US;
+    }
+#if MOTOR_STABILIZATION_ENABLED
+    else {
+        SensorAttitude sample;
+        if (!SensorApp_GetAttitude(&sample, now)) {
+            stabilizing = 0;
+            MotorLogic_ForceDisarm(&logic);
+            Stabilizer_Reset(&stabilizer);
+            last_attitude_tick = 0;
+            for (unsigned i = 0; i < 4; ++i) pulse[i] = MOTOR_MIN_US;
+        } else if (command.axis[1] == 0U) {
+            stabilizing = 0;
+            Stabilizer_Reset(&stabilizer);
+            last_attitude_tick = 0;
+            for (unsigned i = 0; i < 4; ++i) pulse[i] = MOTOR_MIN_US;
+        } else if (sample.tick_ms != last_attitude_tick) {
+            uint16_t logical[4];
+            float dt = last_attitude_tick ?
+                (float)(sample.tick_ms - last_attitude_tick) * 0.001f : 0.02f;
+            if (!Stabilizer_Step(&stabilizer, &command, &sample, dt, logical)) {
+                stabilizing = 0;
+                MotorLogic_ForceDisarm(&logic);
+                for (unsigned i = 0; i < 4; ++i) pulse[i] = MOTOR_MIN_US;
+            } else {
+                stabilizing = 1;
+                pulse[MOTOR_OUTPUT_FL] = logical[0];
+                pulse[MOTOR_OUTPUT_FR] = logical[1];
+                pulse[MOTOR_OUTPUT_RR] = logical[2];
+                pulse[MOTOR_OUTPUT_RL] = logical[3];
+            }
+            last_attitude_tick = sample.tick_ms;
+        } else {
+            for (unsigned i = 0; i < 4; ++i) pulse[i] = requested_us[i];
+        }
+    }
+#endif
+    __disable_irq();
+    for (unsigned i = 0; i < 4; ++i) requested_us[i] = pulse[i];
     last_poll_ms = now;
+    __enable_irq();
     IWDG->KR = 0xAAAAU;
+}
+
+void MotorApp_GetStatus(MotorAppStatus *out)
+{
+    if (!out) return;
+    /* TIM3 is configured for a 1 MHz counter, so CCR ticks equal us.
+     * Read the timer values that are scheduled for the PWM outputs. */
+    out->pwm_us[0] = (uint16_t)TIM3->CCR1;
+    out->pwm_us[1] = (uint16_t)TIM3->CCR2;
+    out->pwm_us[2] = (uint16_t)TIM3->CCR3;
+    out->pwm_us[3] = (uint16_t)TIM3->CCR4;
+    out->armed = logic.armed &&
+        (uint32_t)(HAL_GetTick() - last_poll_ms) <= CONTROL_LINK_TIMEOUT_MS;
+    out->stabilizing = out->armed && stabilizing;
 }
 
 void MotorApp_StartWatchdog(void)
@@ -69,15 +139,16 @@ void TIM3_IRQHandler(void)
 {
     if (TIM3->SR & TIM_SR_UIF) {
         TIM3->SR = 0;
-        uint16_t pulse = requested_us;
+        uint16_t pulse[4];
+        for (unsigned i = 0; i < 4; ++i) pulse[i] = requested_us[i];
         if ((uint32_t)(HAL_GetTick() - last_poll_ms) >
             CONTROL_LINK_TIMEOUT_MS) {
-            pulse = MOTOR_MIN_US;
+            for (unsigned i = 0; i < 4; ++i) pulse[i] = MOTOR_MIN_US;
             poll_stalled = 1;
         }
-        TIM3->CCR1 = pulse;
-        TIM3->CCR2 = pulse;
-        TIM3->CCR3 = pulse;
-        TIM3->CCR4 = pulse;
+        TIM3->CCR1 = pulse[0];
+        TIM3->CCR2 = pulse[1];
+        TIM3->CCR3 = pulse[2];
+        TIM3->CCR4 = pulse[3];
     }
 }
