@@ -1,3 +1,4 @@
+#include "ota_bridge.h"
 #include <stdint.h>
 #include <string.h>
 #include "sdkconfig.h"
@@ -117,6 +118,7 @@ void app_main(void)
     QueueHandle_t phone_queue = xQueueCreate(1, sizeof(PhoneInput));
     ESP_ERROR_CHECK(phone_queue ? ESP_OK : ESP_ERR_NO_MEM);
     ESP_ERROR_CHECK(PhoneServer_Start(phone_queue));
+    OtaBridge_Start();
     strcpy(sensor_screen[0], "QUAD SENSOR MONITOR");
     strcpy(sensor_screen[3], "WAIT STM32 DATA");
     int online = start_oled(), received = 0, stale = 0, dirty = 1;
@@ -136,6 +138,7 @@ void app_main(void)
         uint8_t bytes[256];
         int n = uart_read_bytes(UART_NUM_1, bytes, sizeof(bytes), pdMS_TO_TICKS(20));
         for (int i = 0; i < n; ++i) {
+            OtaBridge_Rx(bytes[i]);
             if (display_feed(&parser, bytes[i], sensor_screen)) {
                 last_rx = xTaskGetTickCount();
                 received = 1; stale = 0;

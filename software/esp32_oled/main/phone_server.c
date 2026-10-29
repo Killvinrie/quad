@@ -1,3 +1,4 @@
+#include "ota_bridge.h"
 #include "phone_server.h"
 #include "phone_control.h"
 #include <string.h>
@@ -27,6 +28,7 @@ static esp_err_t page_handler(httpd_req_t *req)
 
 static esp_err_t command_handler(httpd_req_t *req)
 {
+    if(OtaBridge_Busy()) {httpd_resp_set_status(req,"503 Service Unavailable");httpd_resp_sendstr(req,"Firmware update in progress");return ESP_OK;}
     char marker[4] = {0};
     char body[65];
     PhoneInput input;
@@ -68,6 +70,22 @@ static esp_err_t command_handler(httpd_req_t *req)
     return httpd_resp_sendstr(req, "OK");
 }
 
+#ifdef CONFIG_QUAD_OTA_ENABLE
+static void sta_event(void *arg,esp_event_base_t base,int32_t id,void *data) {
+    (void)arg;
+    if(base==IP_EVENT && id==IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t *event=data;
+        ESP_LOGI(TAG,"Router connected; ESP32 IP: " IPSTR,IP2STR(&event->ip_info.ip));
+    } else if(base==WIFI_EVENT && id==WIFI_EVENT_STA_START) {
+        ESP_LOGI(TAG,"Connecting to router SSID: %s",CONFIG_QUAD_OTA_WIFI_SSID);
+        esp_wifi_connect();
+    } else if(base==WIFI_EVENT && id==WIFI_EVENT_STA_DISCONNECTED) {
+        wifi_event_sta_disconnected_t *event=data;
+        ESP_LOGW(TAG,"Router disconnected (reason=%u); reconnecting",event->reason);
+        esp_wifi_connect();
+    }
+}
+#endif
 esp_err_t PhoneServer_Start(QueueHandle_t command_queue)
 {
     size_t ssid_len = strlen(CONFIG_QUAD_AP_SSID);
@@ -82,6 +100,11 @@ esp_err_t PhoneServer_Start(QueueHandle_t command_queue)
     err = esp_event_loop_create_default();
     if (err != ESP_OK) return err;
     if (!esp_netif_create_default_wifi_ap()) return ESP_FAIL;
+    #ifdef CONFIG_QUAD_OTA_ENABLE
+    if(!esp_netif_create_default_wifi_sta()) return ESP_FAIL;
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT,ESP_EVENT_ANY_ID,sta_event,NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT,IP_EVENT_STA_GOT_IP,sta_event,NULL));
+#endif
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
     err = esp_wifi_init(&init);
     if (err != ESP_OK) return err;
@@ -93,7 +116,17 @@ esp_err_t PhoneServer_Start(QueueHandle_t command_queue)
     config.ap.authmode = WIFI_AUTH_WPA2_PSK;
     config.ap.max_connection = 1;
     config.ap.pmf_cfg.required = true;
+    #ifdef CONFIG_QUAD_OTA_ENABLE
+    wifi_config_t sta={0};
+    strlcpy((char*)sta.sta.ssid,CONFIG_QUAD_OTA_WIFI_SSID,sizeof(sta.sta.ssid));
+    strlcpy((char*)sta.sta.password,CONFIG_QUAD_OTA_WIFI_PASSWORD,sizeof(sta.sta.password));
+    err=esp_wifi_set_mode(WIFI_MODE_APSTA);
+    if(err!=ESP_OK)return err;
+    err=esp_wifi_set_config(WIFI_IF_STA,&sta);
+    if(err!=ESP_OK)return err;
+#else
     err = esp_wifi_set_mode(WIFI_MODE_AP);
+#endif
     if (err != ESP_OK) return err;
     err = esp_wifi_set_config(WIFI_IF_AP, &config);
     if (err != ESP_OK) return err;

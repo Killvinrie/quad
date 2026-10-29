@@ -2,7 +2,7 @@
 
 本文件对应当前拨码切页版本，覆盖 `software/Core` 的 STM32 固件、`software/Common/display_link.h` 共用协议，以及 `software/esp32_oled` 的 ESP32 显示固件。图使用 Mermaid，在支持 Mermaid 的 Markdown 阅读器中可直接显示。寄存器值、公式和分支均按本仓库实现整理。
 
-`test/wifi_test`、`test/hello_world` 是独立实验工程，不参与当前固件运行。当前程序有六轴姿态解算、手机 Wi-Fi 控制链和四路同油门电调输出；X 型姿态 PID/混控代码在完成物理输出映射前默认关闭，没有 OTA 运行链路。
+`test/wifi_test`、`test/hello_world` 是独立实验工程，不参与当前固件运行。当前程序有六轴姿态解算、手机 Wi-Fi 控制链和四路同油门电调输出；X 型姿态 PID/混控代码在完成物理输出映射前默认关闭，已增加 A/B OTA 运行链路，升级部分见 [OTA 说明](OTA.md)。
 
 ## 1. 整体数据流与接线
 

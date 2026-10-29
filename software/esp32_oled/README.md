@@ -20,3 +20,7 @@ idf.py -p /dev/ttyACM0 flash monitor
 ```
 
 串口号按实际设备修改。当前电脑的 ESP-IDF v6.1 Python 虚拟环境未安装；若 `export.sh` 报错，先执行 `~/.espressif/v6.1/esp-idf/install.sh esp32s3`。首次配置时建议在 `menuconfig` 修改默认热点密码。
+
+## STM32 A/B OTA
+
+已增加路由器 STA 联网、树莓派版本检查及 F411 Bootloader 升级桥接，默认关闭。配置与首次安装见 [OTA 说明](../docs/OTA.md)。

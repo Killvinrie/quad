@@ -1,0 +1,20 @@
+[Unit]
+Description=Quad STM32 A/B OTA firmware server
+After=network.target
+
+[Service]
+Type=simple
+User=kevin
+Group=kevin
+WorkingDirectory=/home/kevin/quad-ota
+ExecStart=/usr/bin/python3 -m http.server 8000 --bind 0.0.0.0 --directory /home/kevin/quad-ota/public
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+UMask=0022
+
+[Install]
+WantedBy=multi-user.target

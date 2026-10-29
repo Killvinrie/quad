@@ -1,3 +1,4 @@
+#include "ota_app.h"
 #include "sensor_app.h"
 #include "sensor_config.h"
 #include "main.h"
@@ -442,8 +443,10 @@ void SensorApp_LinkIRQ(void)
     if (status & (USART_SR_RXNE | USART_SR_ORE | USART_SR_FE |
                   USART_SR_NE | USART_SR_PE)) {
         uint8_t byte = (uint8_t)USART2->DR;
-        if (!(status & (USART_SR_ORE | USART_SR_FE | USART_SR_NE | USART_SR_PE)))
+        if (!(status & (USART_SR_ORE | USART_SR_FE | USART_SR_NE | USART_SR_PE))) {
             ControlApp_RxByte(byte);
+            OtaApp_RxByte(byte);
+        }
     }
 }
 void SensorApp_Poll(void)

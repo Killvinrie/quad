@@ -28,3 +28,25 @@ menu "Quad phone controller"
         string "Controller Wi-Fi password (8-63 characters)"
         default "quad-phone-2026"
 endmenu
+
+menu "Quad STM32 A/B OTA"
+    config QUAD_OTA_ENABLE
+        bool "Enable automatic STM32 updates from Raspberry Pi"
+        default n
+    config QUAD_OTA_POLL_SECONDS
+        int "Version check interval (seconds)"
+        default 5
+        range 1 3600
+        help
+            Delay between completed update checks. Network timeouts and an
+            ongoing upgrade may make the actual interval longer.
+    config QUAD_OTA_WIFI_SSID
+        string "Router SSID"
+        default ""
+    config QUAD_OTA_WIFI_PASSWORD
+        string "Router password"
+        default ""
+    config QUAD_OTA_MANIFEST
+        string "Raspberry Pi manifest URL"
+        default "http://192.168.1.100:8000/manifest.json"
+endmenu

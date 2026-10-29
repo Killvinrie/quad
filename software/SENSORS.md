@@ -64,42 +64,7 @@ STM32 推荐直接使用 ARM GCC，无需 IAR。工具链必须是 `arm-none-eab
 make -C software -j4
 ```
 
-输出在 `software/build/`：
-- `quad.elf`：带调试符号，可供 GDB/OpenOCD 使用。
-- `quad.hex`：带地址信息，可供 STM32CubeProgrammer 使用。
-- `quad.bin`：裸二进制，烧录起始地址为 **0x08000000**。
-- `quad.map`：链接布局。
-
-使用 ST-Link 和 OpenOCD 烧录（连接 SWDIO/PA13、SWCLK/PA14、GND，并保证目标板供电）：
-
-```sh
-make -C software flash
-```
-
-烧录目标配置请求 1800kHz SWD，并使用 OpenOCD 的错误级别日志；这样不会显示 ST-Link 将 2000kHz 调整到 1800kHz 的信息提示。若需要调试日志，可手动去掉 Makefile 中的 `-d0`。
-
-该命令会写入 Flash、校验并复位。默认编译命令不会连接或烧录设备。也可以在 STM32CubeProgrammer 中加载 HEX 烧录。固件按独立应用链接，不为自定义 bootloader 预留偏移。
-
-`GCC/` 提供启动代码、512KiB Flash / 128KiB RAM 链接脚本及受限堆分配；保留 4KiB 栈、2KiB 堆，启用 Cortex-M4F 硬件单精度浮点。使用 newlib-nano，不依赖半主机调试。工具链中的 nosys 文件操作桩可能输出“未实现”的链接警告，当前应用使用内存格式化、不使用文件 I/O；不影响固件生成。
-
-若使用 IAR：在 IAR 中打开 `EWARM/Project.eww`，编译 `software` 工程并下载。已将新增源文件和 I²C/UART HAL 源文件加入工程；不需要开启浮点 printf。
-
-ESP32：使用 ESP-IDF 5.3 或更新版本（新 I²C master API、esp_driver_i2c/esp_driver_uart 组件），在已加载 IDF 环境的终端执行：
-
-```sh
-cd software/esp32_oled
-idf.py set-target esp32s3
-idf.py menuconfig
-idf.py build
-idf.py -p /dev/ttyACM0 flash monitor
-```
-
-串口设备路径按实物修改。`menuconfig → Quad phone controller` 可修改手机热点名称和密码；`Quad sensor display` 可修改 OLED 引脚和 STM32 链路串口参数。完整使用方法见 [手机遥控说明](esp32_oled/README.md)。该目录是独立固件；现有 `test/wifi_test` 的 Wi-Fi/OTA 实验程序没有合并进来。
-
-CubeMX 当前只把 I²C/UART 引脚设为复用，没有生成这些外设的初始化，本实现统一由 `SensorApp_Init` 管理。不要再添加第二套重复初始化。重新生成 CubeMX 代码后，须检查：
-1. `stm32f4xx_hal_conf.h` 中 I²C/UART 模块依然启用。
-2. IAR 工程中保留 `sensor_app.c`、`gps_nmea.c`、`bmp388_math.c` 和 I²C/UART HAL 源文件。
-3. `main.c` 和中断文件的 USER CODE 中保留应用调用，ADC 采样时间为 144 cycles。
+当前 GCC 工程采用 A/B OTA 链接布局。首次烧录、树莓派发布和 ESP32 配置请按 [OTA 说明](docs/OTA.md) 操作；旧的独立应用 0x08000000 烧录步骤已停用。IAR 工程尚未迁移 OTA。
 
 ## 验证
 

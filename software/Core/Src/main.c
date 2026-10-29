@@ -23,6 +23,7 @@
 /* USER CODE BEGIN Includes */
 #include "sensor_app.h"
 #include "motor_app.h"
+#include "ota_app.h"
 
 /* USER CODE END Includes */
 
@@ -107,6 +108,7 @@ int main(void)
     /* USER CODE BEGIN 3 */
     SensorApp_Poll();
     MotorApp_Poll();
+    OtaApp_Poll();
   }
   /* USER CODE END 3 */
 }
